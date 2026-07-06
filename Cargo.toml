@@ -78,6 +78,14 @@ uds_windows = "=1.1.0"
 uuid = "=1.20.0"
 
 # latest versions that support Rust 1.84
+json-patch = { version = "3", default-features = false }
+# libvirt Rust bindings, gated behind the `qemu` feature.  The
+# `qemu` sub-feature of the crate exposes
+# `virDomainQemuMonitorCommand`, which the backend uses for
+# iothread lifecycle and vq-mapping passthrough (native
+# `add_iothread` / `del_iothread` are not exposed by the crate
+# yet -- see backends/qemu/libvirt.rs).
+
 virt = { version = "0.4", features = ["qemu"], optional = true }
 once_cell = { version = "1.21.4", optional = true }
 rustix = { version = "1.1.4", features = ["param"] }
