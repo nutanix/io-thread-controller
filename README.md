@@ -84,6 +84,12 @@ managed and unmanaged classifications across daemon restarts.
                 +------------------------------------------+
 ```
 
+## Configuration includes
+
+Controller, engine, and backend JSON files may contain an `include` field. Its
+path is resolved relative to the including file, loaded recursively, and merged
+before the including file's keys are applied.
+
 ## Scale-up state machine
 
 ```text
