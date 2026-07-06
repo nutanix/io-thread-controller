@@ -75,6 +75,10 @@ pub struct Config {
     /// Emit a one-time legend for status-line fields at startup.
     #[serde(default)]
     pub print_status_header: bool,
+    /// Cap how many instances may be actuated in any single tick.  0 disables
+    /// the cap.
+    #[serde(default = "default_max_instances_adjusted_per_poll")]
+    pub max_instances_adjusted_per_poll: u32,
     /// When true, log the scaling verdict but skip the actuation
     /// call to `set_thread_count`.
     #[serde(default)]
@@ -116,6 +120,10 @@ pub(crate) fn serialize_percent<S: Serializer>(
     serializer.serialize_f64(value * 100.0)
 }
 
+fn default_max_instances_adjusted_per_poll() -> u32 {
+    0
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -131,6 +139,7 @@ impl Default for Config {
             enable_per_vm_status_line: true,
             enable_aggregate_status_line: true,
             print_status_header: false,
+            max_instances_adjusted_per_poll: default_max_instances_adjusted_per_poll(),
             dry_run: false,
         }
     }
