@@ -104,6 +104,7 @@ instability = "=0.3.10"
 
 # Only for the TUI:
 anyhow = "1.0.104"
+statistical = "1.0.0"
 
 [dev-dependencies]
 tempfile = "=3.14.0"
