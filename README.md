@@ -145,7 +145,7 @@ occupies one line.
 
 ```
 INFO vm=vm-a thr=4 iops=155593/0/0 bw_mb_s=20394/0 \
-  cpu=90/358 iops_1_5_15m=154995/153840/151220 \
+  cpu=90/87/358 iops_1_5_15m=154995/153840/151220 \
   cpu_us_per_io_1_5_15m=23/16/19
 ```
 
@@ -154,7 +154,7 @@ INFO vm=vm-a thr=4 iops=155593/0/0 bw_mb_s=20394/0 \
 - `iops`: current read / write / other operations per second.
 - `iops_1_5_15m`: average total IOPS over rolling 1m / 5m / 15m windows.
 - `bw_mb_s`: current read / write bandwidth in MB/s.
-- `cpu`: average per-thread / total pool CPU percentage.
+- `cpu`: average / median / total worker CPU percentage.
 - `cpu_us_per_io_1_5_15m`: CPU microseconds per completed I/O over the same
   windows.
 

@@ -14,6 +14,7 @@ use std::{
 use futures_util::future::join_all;
 use procfs::{CurrentSI, ProcError};
 use serde::{Deserialize, Serialize};
+use statistical::median;
 use thiserror::Error;
 
 use crate::{
@@ -122,6 +123,16 @@ struct CpuStats {
 
 /// Summarise per-worker utilisation, falling back to aggregate samples.
 fn compute_cpu_stats(s: &crate::instance::InstanceStatus) -> CpuStats {
+    if !s.per_worker_util.is_empty() {
+        let total = s.per_worker_util.iter().sum::<f64>();
+        let median = median(&s.per_worker_util);
+        return CpuStats {
+            avg_pct: (total / s.per_worker_util.len() as f64 * 100.0).round() as u64,
+            median_pct: (median * 100.0).round() as u64,
+            total_pct: (total * 100.0).round() as u64,
+        };
+    }
+
     CpuStats {
         avg_pct: (s.per_thread_util * 100.0).round() as u64,
         median_pct: (s.per_thread_util * 100.0).round() as u64,
@@ -730,8 +741,7 @@ impl Controller {
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) {
-        let cpu_average = status.per_thread_util.clamp(0.0, 1.0) * 100.0;
-        let cpu_total = cpu_average * f64::from(status.thread_count);
+        let cpu = compute_cpu_stats(status);
         tracing::info!(
             target: "status",
             vm = instance.to_string(),
@@ -748,7 +758,7 @@ impl Controller {
                 status.read_bytes_per_second / 1_000_000,
                 status.write_bytes_per_second / 1_000_000
             ),
-            cpu = %format!("{cpu_average:.0}/{cpu_total:.0}"),
+            cpu = %format!("{}/{}/{}", cpu.avg_pct, cpu.median_pct, cpu.total_pct),
             cpu_us_per_io_1_5_15m =
                 %format_1_5_15(&status.rolling, |rolling, window| {
                     rolling.cpu_us_per_io_over(window)

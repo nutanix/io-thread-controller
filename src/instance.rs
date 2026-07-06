@@ -10,7 +10,7 @@
 //! A [`crate::backends::Backend`] is the fleet-level adapter that owns
 //! backend-wide configuration and discovers zero or more such records.
 
-use std::{fmt, sync::LazyLock, time::Instant};
+use std::{collections::HashMap, fmt, sync::LazyLock, time::Instant};
 
 use async_trait::async_trait;
 use procfs::process::Process;
@@ -221,28 +221,25 @@ impl Instance {
         status.vcpu_count = snapshot.vcpu_count;
         status.perf = snapshot.perf;
         status.alive = true;
-        if let Some(per_thread_util) = snapshot.per_thread_util {
-            status.per_thread_util = per_thread_util.clamp(0.0, 1.0);
-        } else if let (Some(prev), Some(cur)) = (status.last_cpu_sample.as_ref(), cpu.as_ref())
-            && prev.thread_count == cur.thread_count
-            && cur.thread_count > 0
-            && let Some(d_ticks) = cur.cpu_ticks.checked_sub(prev.cpu_ticks)
+        let backend_util = snapshot.per_thread_util.map(|util| util.clamp(0.0, 1.0));
+        if let Some(backend_util) = backend_util {
+            status.per_worker_util.clear();
+            status.last_worker_names = None;
+            status.per_thread_util = backend_util;
+        } else if let (Some(previous), Some(current)) =
+            (status.last_cpu_sample.as_ref(), cpu.as_ref())
         {
-            let d_time_ticks = cur
+            let wall_ticks = current
                 .sampled_at
-                .saturating_duration_since(prev.sampled_at)
-                .as_secs_f64()
-                * *TICKS_PER_SECOND;
-            if d_time_ticks > 0.0 {
-                let measured = d_ticks as f64 / d_time_ticks / f64::from(cur.thread_count);
-                // Scheduler-tick quantisation can make a short
-                // interval appear fractionally above a fully
-                // occupied CPU; bound that sampling artifact.
-                status.per_thread_util = measured.clamp(0.0, 1.0);
+                .checked_duration_since(previous.sampled_at)
+                .map(|elapsed| elapsed.as_secs_f64() * *TICKS_PER_SECOND)
+                .filter(|ticks| *ticks > 0.0);
+            if let Some(wall_ticks) = wall_ticks {
+                let worker_util =
+                    compute_per_worker_util(&previous.per_worker, &current.per_worker, wall_ticks);
+                update_worker_utilisation(&mut status, worker_util);
             }
         }
-        // A changed task count invalidates the delta. Keep the last
-        // utilisation until the next like-for-like sample.
         let io_ops_total = match snapshot.perf {
             Some(perf) => perf
                 .read_io_count
@@ -250,7 +247,7 @@ impl Instance {
                 .saturating_add(perf.other_io_count),
             None => 0,
         };
-        if let Some(per_thread_util) = snapshot.per_thread_util {
+        if let Some(per_thread_util) = backend_util {
             status.rolling.push_from_backend_util(
                 now,
                 io_ops_total,
@@ -265,7 +262,7 @@ impl Instance {
                 *TICKS_PER_SECOND,
             );
         }
-        status.last_cpu_sample = cpu;
+        status.last_cpu_sample = if backend_util.is_none() { cpu } else { None };
         true
     }
 
@@ -374,6 +371,10 @@ pub struct InstanceStatus {
     pub per_thread_util: f64,
     /// Previous cumulative CPU sample used to compute a delta.
     pub last_cpu_sample: Option<CpuSample>,
+    /// Latest comparable utilisation fraction for each sampled worker.
+    pub per_worker_util: Vec<f64>,
+    /// Sorted names from the latest worker sample, for roster-change logging.
+    pub last_worker_names: Option<Vec<String>>,
     /// Bounded 1m/5m/15m I/O and CPU history.
     pub rolling: RollingMetrics,
     /// Time of the previous backend performance snapshot.
@@ -407,7 +408,7 @@ impl InstanceStatus {
 }
 
 /// Cumulative CPU counters sampled across one backend process.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CpuSample {
     /// Sum of user and system CPU ticks across sampled tasks.
     pub cpu_ticks: u64,
@@ -415,6 +416,19 @@ pub struct CpuSample {
     pub sampled_at: Instant,
     /// Number of tasks included in the sample.
     pub thread_count: u32,
+    /// Cumulative CPU counters for individual sampled tasks.
+    pub per_worker: Vec<TaskCpuSample>,
+}
+
+/// One task's identity, name, and cumulative CPU counter.
+#[derive(Debug, Clone)]
+pub struct TaskCpuSample {
+    /// Linux task identifier.
+    pub tid: i32,
+    /// Task name read from `/proc/.../comm`.
+    pub name: String,
+    /// Cumulative user and system CPU ticks.
+    pub cpu_ticks: u64,
 }
 
 /// Backend-neutral performance counters from one snapshot.
@@ -456,6 +470,56 @@ pub struct ThreadPoolSnapshot {
     pub per_thread_util: Option<f64>,
 }
 
+/// Store one set of per-worker utilisation samples.
+fn update_worker_utilisation(status: &mut InstanceStatus, worker_util: Vec<(String, f64)>) {
+    let mut names = worker_util
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    if status.last_worker_names.as_ref() != Some(&names) {
+        tracing::debug!(
+            target: "controller",
+            thread_count = names.len(),
+            threads = %names.join(","),
+            "worker thread set changed"
+        );
+        status.last_worker_names = Some(names);
+    }
+
+    status.per_worker_util = worker_util.into_iter().map(|(_, util)| util).collect();
+    status.per_thread_util = if status.per_worker_util.is_empty() {
+        0.0
+    } else {
+        status.per_worker_util.iter().sum::<f64>() / status.per_worker_util.len() as f64
+    };
+}
+
+/// Match task counters by TID and convert deltas to utilisation fractions.
+fn compute_per_worker_util(
+    previous: &[TaskCpuSample],
+    current: &[TaskCpuSample],
+    wall_ticks: f64,
+) -> Vec<(String, f64)> {
+    let previous_by_tid: HashMap<i32, (&str, u64)> = previous
+        .iter()
+        .map(|task| (task.tid, (task.name.as_str(), task.cpu_ticks)))
+        .collect();
+    current
+        .iter()
+        .filter_map(|task| {
+            let (_, previous_ticks) = previous_by_tid
+                .get(&task.tid)
+                .filter(|(name, _)| *name == task.name.as_str())?;
+            let delta = task.cpu_ticks.checked_sub(*previous_ticks)?;
+            // Scheduler-tick quantisation can make a short interval appear
+            // fractionally above one fully occupied CPU; bound that artifact.
+            let util = (delta as f64 / wall_ticks).clamp(0.0, 1.0);
+            Some((task.name.clone(), util))
+        })
+        .collect()
+}
+
 /// Read cumulative CPU time across matching `/proc/<pid>/task/*/stat` files.
 #[tracing::instrument(skip(filter), fields(pid))]
 fn read_cpu_sample(
@@ -466,6 +530,7 @@ fn read_cpu_sample(
     let tasks = process.tasks()?;
     let mut cpu_ticks = 0u64;
     let mut thread_count = 0u32;
+    let mut per_worker = Vec::new();
     for task in tasks {
         let task = match task {
             Ok(task) => task,
@@ -495,6 +560,11 @@ fn read_cpu_sample(
         let task_ticks = stat.utime.saturating_add(stat.stime);
         cpu_ticks = cpu_ticks.saturating_add(task_ticks);
         thread_count += 1;
+        per_worker.push(TaskCpuSample {
+            tid: stat.pid,
+            name: stat.comm,
+            cpu_ticks: task_ticks,
+        });
     }
     if thread_count == 0 {
         return Err(CpuSampleError::NoCpuSamples);
@@ -503,6 +573,7 @@ fn read_cpu_sample(
         cpu_ticks,
         sampled_at: Instant::now(),
         thread_count,
+        per_worker,
     })
 }
 
@@ -531,9 +602,8 @@ mod tests {
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
                 thread_count: self.threads,
-                // FIXME these weren't required, looked like broken due to rebase
+                vcpu_count: 2,
                 perf: None,
-                vcpu_count: 1,
                 per_thread_util: None,
             })
         }
@@ -605,5 +675,40 @@ mod tests {
             SnapshotClient { threads: 1 },
         );
         assert_eq!(instance.to_string(), "vm-1");
+    }
+
+    use super::{TaskCpuSample, compute_per_worker_util};
+
+    fn task(tid: i32, name: &str, cpu_ticks: u64) -> TaskCpuSample {
+        TaskCpuSample {
+            tid,
+            name: name.to_string(),
+            cpu_ticks,
+        }
+    }
+
+    /// Test that two workers sharing a name still get independent
+    /// CPU-delta util samples.
+    #[test]
+    fn duplicate_worker_names_keep_independent_deltas() {
+        let previous = vec![task(10, "worker", 100), task(11, "worker", 200)];
+        let current = vec![task(11, "worker", 400), task(10, "worker", 200)];
+
+        let util = compute_per_worker_util(&previous, &current, 500.0);
+        assert_eq!(util.len(), 2);
+        assert!((util[0].1 - 0.4).abs() < f64::EPSILON);
+        assert!((util[1].1 - 0.2).abs() < f64::EPSILON);
+    }
+
+    /// Test that a newly appeared worker does not spike util from
+    /// lifetime counters.
+    #[test]
+    fn new_worker_starts_without_a_lifetime_spike() {
+        let previous = vec![task(10, "worker0", 100)];
+        let current = vec![task(10, "worker0", 200), task(11, "worker1", 900_000)];
+
+        let util = compute_per_worker_util(&previous, &current, 500.0);
+        assert_eq!(util.len(), 1);
+        assert!((util[0].1 - 0.2).abs() < f64::EPSILON);
     }
 }
