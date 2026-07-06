@@ -650,6 +650,31 @@ impl Controller {
             return Ok(());
         }
 
+        if self.cfg.dry_run {
+            tracing::info!(
+                target: "controller",
+                vm = %instance.id,
+                action = %action,
+                target,
+                "dry-run: would scale"
+            );
+            if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_)) {
+                instance.status.write().await.cooldown_until =
+                    Some(Instant::now() + Duration::from_secs_f64(self.cfg.cooldown_secs));
+            }
+            self.engine
+                .on_applied(
+                    &instance.id,
+                    AppliedOutcome::DryRun {
+                        action,
+                        prev_thread_count: previous_count,
+                        prev_io_count_total: previous_io_count,
+                    },
+                )
+                .await;
+            return Ok(());
+        }
+
         match instance.client.set_thread_count(target).await {
             Ok(()) => {
                 let mut status = instance.status.write().await;

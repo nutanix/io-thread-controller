@@ -77,6 +77,9 @@ struct Cli {
     /// Emit a one-time legend for uptime-style status fields.
     #[arg(long)]
     print_status_header: bool,
+    /// Log scaling decisions without calling set_thread_count.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// See `Cli::log_style`.
@@ -122,6 +125,9 @@ async fn main() -> Result<(), IoThreadControllerError> {
     let mut cfg = load_daemon_config(&cli.config)?;
     if cli.print_status_header {
         cfg.print_status_header = true;
+    }
+    if cli.dry_run {
+        cfg.dry_run = true;
     }
     validate_config(&cfg)?;
     let backends = registered_backends(&cfg)?;

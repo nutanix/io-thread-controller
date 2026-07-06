@@ -75,6 +75,10 @@ pub struct Config {
     /// Emit a one-time legend for status-line fields at startup.
     #[serde(default)]
     pub print_status_header: bool,
+    /// When true, log the scaling verdict but skip the actuation
+    /// call to `set_thread_count`.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_true() -> bool {
@@ -127,6 +131,7 @@ impl Default for Config {
             enable_per_vm_status_line: true,
             enable_aggregate_status_line: true,
             print_status_header: false,
+            dry_run: false,
         }
     }
 }

@@ -8,6 +8,7 @@
   "cooldown_secs": 10.0,
   "engine": "threshold",
   "engine_config_dir": "/etc/io-thread-controller.d/engines",
-  "backend_config_dir": "/etc/io-thread-controller.d/backends"
-  "vm_state_path": "/run/io-thread-controller/vm-ownership.json"
+  "backend_config_dir": "/etc/io-thread-controller.d/backends",
+  "vm_state_path": "/run/io-thread-controller/vm-ownership.json",
+  "dry_run": false
 }
