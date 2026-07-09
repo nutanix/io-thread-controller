@@ -329,6 +329,28 @@ fn log_performance_revert(
     );
 }
 
+/// Emit one operator-visible scale decision.
+fn log_scale_decision(
+    instance: &Instance,
+    per_thread_util: f64,
+    thread_count: u32,
+    action: ScaleAction,
+) {
+    let (direction, target) = match action {
+        ScaleAction::Up(target) => ("up", target),
+        ScaleAction::Down(target) => ("down", target),
+        ScaleAction::Revert(_) | ScaleAction::None => return,
+    };
+    tracing::info!(
+        target: "engine",
+        vm = instance.to_string(),
+        util = per_thread_util,
+        action = direction,
+        thr = %format!("{thread_count}->{target}"),
+        "threshold scaling decision"
+    );
+}
+
 #[async_trait]
 impl ScalingEngine for ThresholdEngine {
     fn name(&self) -> &'static str {
@@ -384,13 +406,17 @@ impl ScalingEngine for ThresholdEngine {
         {
             // FIXME The min seems redundant given the thread count will always be less than
             // or equal to the max_thread_count here.
-            return ScaleAction::Up(thread_count.saturating_add(1).min(context.max_thread_count));
+            let action = ScaleAction::Up((thread_count + 1).min(context.max_thread_count));
+            log_scale_decision(instance, per_thread_util, thread_count, action);
+            return action;
         }
 
         if down_target < thread_count
             && instance_state.low_util_polls >= self.cfg.scale_down_sustain_polls
         {
-            ScaleAction::Down(down_target)
+            let action = ScaleAction::Down(down_target);
+            log_scale_decision(instance, per_thread_util, thread_count, action);
+            action
         } else {
             ScaleAction::None
         }
