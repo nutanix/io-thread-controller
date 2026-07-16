@@ -11,6 +11,7 @@
 //!
 //! Verbs currently exposed:
 //!   * debug-only `SetThreadCount(vm, threads, sticky)`;
+//!   * read-only `GetStats()`;
 //!   * named-IOThread and virtqueue-mapping operations for clients that support
 //!     them.
 
@@ -50,6 +51,11 @@ pub enum DbusRequest {
     /// Structured snapshot of every tracked instance. The reply is a JSON
     /// string so the wire signature stays a bare `s` and the payload shape can
     /// evolve without D-Bus IDL churn.  Field contract is documented on
+    /// JSON snapshot of all tracked VMs.
+    GetStats {
+        /// Reply channel carrying the serialized snapshot.
+        reply: oneshot::Sender<String>,
+    },
     /// [`crate::controller::SnapshotPayload`].
     GetSnapshot {
         /// Reply channel; JSON-encoded
@@ -152,6 +158,17 @@ impl Service {
             Err(e) => Err(zbus::fdo::Error::Failed(e)),
         }
     }
+
+    /// Return the controller's machine-readable fleet snapshot.
+    async fn get_stats(&self) -> zbus::fdo::Result<String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::GetStats { reply: tx })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        await_with_timeout(rx).await
+    }
+
     /// D-Bus wire signature: `GetSnapshot() -> s`.
     ///
     /// The `s` return is a JSON payload matching

@@ -282,6 +282,36 @@ impl Controller {
                 };
                 let _ = reply.send(result);
             }
+            DbusRequest::GetStats { reply } => {
+                let mut vms = Vec::with_capacity(self.instances.len());
+                for (id, instance) in &self.instances {
+                    let status = instance.status.read().await;
+                    let (read_io_count, write_io_count, other_io_count) = match status.perf {
+                        Some(perf) => {
+                            (perf.read_io_count, perf.write_io_count, perf.other_io_count)
+                        }
+                        None => (0, 0, 0),
+                    };
+                    vms.push(serde_json::json!({
+                        "vm": id,
+                        "thread_count": status.thread_count,
+                        "manual_scaling_sticky": status.manual_scaling_sticky,
+                        "scaling_allowed": status.scaling_allowed,
+                        "vcpu_count": status.vcpu_count,
+                        "per_thread_util": status.per_thread_util,
+                        // FIXME omit if status.perf.is_none()?
+                        "read_io_count": read_io_count,
+                        "write_io_count": write_io_count,
+                        "other_io_count": other_io_count,
+                    }));
+                }
+                let snapshot = serde_json::json!({
+                    "tick": self.tick_index,
+                    "vms": vms,
+                })
+                .to_string();
+                let _ = reply.send(snapshot);
+            }
             DbusRequest::AddIoThread {
                 vm,
                 id,

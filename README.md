@@ -205,6 +205,36 @@ instance's thread count. Setting `sticky=true` suppresses automatic scaling for
 that instance until a later call clears it. This debug-only override is kept in
 memory and is lost when the daemon restarts.
 
+`GetStats()` returns a JSON fleet snapshot. For example:
+
+```json
+{
+  "tick": 42,
+  "vms": [{
+    "vm": "vm-1",
+    "thread_count": 3,
+    "manual_scaling_sticky": false,
+    "scaling_allowed": true,
+    "vcpu_count": 8,
+    "per_thread_util": 0.72,
+    "read_io_count": 1000,
+    "write_io_count": 250,
+    "other_io_count": 0
+  }]
+}
+```
+
+```sh
+busctl --system call \
+  com.nutanix.io_thread_controller1 \
+  /com/nutanix/io_thread_controller1 \
+  com.nutanix.io_thread_controller1 \
+  GetStats
+```
+
+`GetStats` is available in release builds and world-readable under the shipped
+D-Bus policy.
+
 ```sh
 busctl --system call \
   com.nutanix.io_thread_controller1 \
