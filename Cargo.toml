@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "fmt",
     "std",
     "env-filter",
+    "json",
 ] }
 inotify = { version = "0.10", default-features = false, features = ["stream"] }
 async-trait = "0.1"

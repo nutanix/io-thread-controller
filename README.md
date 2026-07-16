@@ -219,3 +219,17 @@ the debug method to root.
 Backends that support named IOThreads can also expose
 `GetIoThreadVqMapping`, `AddIoThread`, `DelIoThread`, and
 `SetIoThreadVqMapping`.
+
+## Log style
+
+`--log-style=auto` uses the compact systemd form when `JOURNAL_STREAM` is set
+and the full human form otherwise. For example, journald already supplies the
+timestamp and service name, so the daemon emits:
+
+```
+INFO vm=vm-1 thr=4 iops=12000/0/0 ...
+```
+
+Use `--log-style=human` to retain the timestamp and tracing target when running
+interactively, or `--log-style=systemd` to force compact output for another log
+collector.
