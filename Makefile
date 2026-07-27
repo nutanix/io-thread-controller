@@ -5,6 +5,13 @@
 
 TARGET ?= debug
 
+# Extra cargo feature flags. Defaults come from Cargo.toml
+# (`qemu`, `threshold-engine`, `tui`). Examples:
+#   make                              # default features, including iothread-tui
+#   make CARGO_FEATURES='--no-default-features --features qemu,threshold-engine'
+#                                     # daemon only (no TUI)
+CARGO_FEATURES ?=
+
 .PHONY: all
 all: $(TARGET)
 
@@ -21,7 +28,7 @@ CARGO_FMT = cargo fmt -- $(CARGO_FMT_FLAGS)
 CARGO_CLIPPY = cargo clippy --tests --locked
 CARGO_CLIPPY_FLAGS = --all-features --all-targets -- \
 	-D warnings -D clippy::use_self -W dead_code
-CARGO_BUILD = cargo build --locked
+CARGO_BUILD = cargo build --locked $(CARGO_FEATURES)
 
 .PHONY: check
 check:
@@ -40,7 +47,7 @@ clean:
 
 .PHONY: unit-test
 unit-test:
-	RUST_BACKTRACE=1 cargo test
+	RUST_BACKTRACE=1 cargo test --all-features
 
 .PHONY: test
 test: unit-test
@@ -62,3 +69,7 @@ install: $(TARGET)
 		${DESTDIR}/usr/lib/systemd/system/io-thread-controller.service
 	install -D -m 0644 com.nutanix.io_thread_controller.conf \
 		${DESTDIR}/etc/dbus-1/system.d/com.nutanix.io_thread_controller.conf
+	if [ -f target/$(TARGET)/iothread-tui ]; then \
+		install -D -m 0755 target/$(TARGET)/iothread-tui \
+			${DESTDIR}/usr/bin/iothread-tui; \
+	fi
