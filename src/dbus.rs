@@ -47,6 +47,15 @@ pub enum DbusRequest {
         /// One-shot channel used to complete the D-Bus method call.
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Structured snapshot of every tracked instance. The reply is a JSON
+    /// string so the wire signature stays a bare `s` and the payload shape can
+    /// evolve without D-Bus IDL churn.  Field contract is documented on
+    /// [`crate::controller::SnapshotPayload`].
+    GetSnapshot {
+        /// Reply channel; JSON-encoded
+        /// [`crate::controller::SnapshotPayload`] on success.
+        reply: oneshot::Sender<String>,
+    },
     /// Read the current virtqueue-to-IOThread mapping.
     GetIoThreadVqMapping {
         /// Instance / vm id to address.
@@ -143,6 +152,27 @@ impl Service {
             Err(e) => Err(zbus::fdo::Error::Failed(e)),
         }
     }
+    /// D-Bus wire signature: `GetSnapshot() -> s`.
+    ///
+    /// The `s` return is a JSON payload matching
+    /// `SnapshotPayload` on the controller side.  Kept as a
+    /// bare string on the wire so we can evolve the payload
+    /// shape (add a new metric, reorder fields, extend a
+    /// nested block) without a fresh D-Bus signature and
+    /// forced re-flash of every consumer.  Consumers parse it
+    /// with `serde_json` -- unknown fields are ignored, missing
+    /// fields fall back to the type's default -- so slightly
+    /// older consumers keep running against a newer daemon and
+    /// vice versa.
+    async fn get_snapshot(&self) -> zbus::fdo::Result<String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::GetSnapshot { reply: tx })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("engine channel closed".into()))?;
+        await_with_timeout(rx).await
+    }
+
     async fn get_io_thread_vq_mapping(
         &self,
         vm: String,
