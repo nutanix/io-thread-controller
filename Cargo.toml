@@ -16,15 +16,25 @@ resolver = "3"
 name = "io-thread-controller"
 path = "src/main.rs"
 
+# Live perf-plot and dashboard client for the daemon's fleet.
+# Gated on the `tui` feature (on by default). Disable with
+# `--no-default-features` plus the daemon features you still need.
+[[bin]]
+name = "iothread-tui"
+path = "src/bin/iothread-tui.rs"
+required-features = ["tui"]
+
 [lib]
 name = "io_thread_controller"
 path = "src/lib.rs"
 
 # Feature flags.
 [features]
-default = ["threshold-engine", "qemu-backend"]
+default = ["threshold-engine", "qemu-backend", "tui"]
 threshold-engine = []
 qemu-backend = ["dep:once_cell", "dep:virt"]
+# TUI (`iothread-tui` binary), enabled by default.
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 tokio = { version = "1", features = [
@@ -71,6 +81,12 @@ uuid = "=1.20.0"
 virt = { version = "0.4", features = ["qemu"], optional = true }
 once_cell = { version = "1.21.4", optional = true }
 rustix = { version = "1.1.4", features = ["param"] }
+
+ratatui = { version = "0.29", default-features = false, features = [
+    "crossterm",
+], optional = true }
+crossterm = { version = "0.29", optional = true }
+
 clap = { version = "=4.5.61", features = ["derive", "env"] }
 clap_lex = "=1.0.1"
 getrandom = "=0.3.4"
@@ -80,6 +96,14 @@ lazy_static = "1.5.0"
 glob = "0.3.4"
 rstest = "0.26.1"
 test-log = { version = "0.2.21", features = ["trace"] }
+darling = "=0.21"
+darling_core = "=0.21"
+darling_macro = "=0.21"
+unicode-segmentation = "=1.12.0"
+instability = "=0.3.10"
+
+# Only for the TUI:
+anyhow = "1.0.104"
 
 [dev-dependencies]
 tempfile = "=3.14.0"

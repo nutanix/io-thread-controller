@@ -233,3 +233,228 @@ INFO vm=vm-1 thr=4 iops=12000/0/0 ...
 Use `--log-style=human` to retain the timestamp and tracing target when running
 interactively, or `--log-style=systemd` to force compact output for another log
 collector.
+
+## `iothread-tui`
+
+`iothread-tui` is a ratatui-based operator dashboard for the
+whole io-thread-controller fleet.  It is a **pure daemon
+client**: at startup it connects to
+`com.nutanix.io_thread_controller1` on the system D-Bus,
+polls `GetSnapshot()` at the user's `--refresh-secs` cadence,
+and renders whatever roster the daemon reports.  A running
+daemon is therefore mandatory — the TUI refuses to start
+without one (fail-fast is friendlier than silently spawning
+a poller that will time out on every tick).
+
+Because the daemon already owns backend discovery,
+reconciliation, and every perf counter, the TUI stays
+backend-agnostic without linking backend implementations.
+Add a new backend to the daemon and the TUI picks it up on the
+next `GetSnapshot` reply, with no TUI rebuild required.
+
+It ships as a second binary of the same crate.  `make` (the
+default target) builds both the daemon and the TUI; set
+`TUI=0` on the `make` line to skip it on lean build hosts:
+
+```
+make                        # builds io-thread-controller + iothread-tui
+make TUI=0                  # daemon only
+cargo build --features tui  # equivalent to the make default
+./target/debug/iothread-tui --help
+```
+
+Add `QEMU=1` (or `--features qemu`) for the upstream-QEMU
+daemon backend; the TUI itself does not link libvirt because
+it never sees a backend directly.
+
+### Layout
+
+```
+ iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=default-dark   [h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme 12345 plots ↑↓ focus s+/- threads
+┌── perf (IOPS @ 4 KiB)   y=200k ───────────────────────────────────────┐
+│                          4→5                                          │
+│         ╭╮        ╭─╮  ┌─╯          ╭─────                            │
+│        ╱  ╲──────╯   ╰─╯     3→2   ╱                                  │
+│       ╱                     ─────┘                                    │
+│  ─── vm-1  ─── vm-2  ─── TOTAL (grey)                                 │
+└───────────────────────────────────────────────────────────────────────┘
+┌── cpu (%)   y=400 ────────────────────────────────────────────────────┐
+│         ...                                                           │
+└───────────────────────────────────────────────────────────────────────┘
+┌── vms ────────────────────────────────────────────────────────────┐
+│ id                    thr  iops r/w/o  bw r/w  cpu%  us/iop  lat_r ...  qd
+│ 1615a59c…dc4a vc=4      4  61k/0/0     240/0    380  6       250/... 239
+│ 8ac13990…7a11 vc=8      2  30k/0/0     120/0    195  7       200/... 123
+│ TOTAL                   6  91k/0/0     360/0    575  6       -/-/-   362
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+* Up to five **stackable plot panes** share the top of the
+  frame; each is individually toggleable and equal-height splits
+  scale their Y-axis when more than one is on:
+
+    - `1` — **perf**  (IOPS or MB/s, toggle with `m`)
+    - `2` — **latency**  (µs; four lines per vm — read
+      avg + read p99 + write avg + write p99.  The avg line
+      is the histogram-derived arithmetic mean the daemon
+      publishes on `SnapshotLatency.avg` so operators can
+      see both the typical and the tail-case in the same
+      pane.)
+    - `3` — **cpu**  (per-pool `%`; a 4-thread pool at 100%
+      reads as 400)
+    - `4` — **queue depth**  (per-VM virtqueue depth)
+    - `5` — **cpu (µs / iop)**  (efficiency: lower is
+      better; NaN samples on idle ticks are skipped so the
+      trace does not jump to infinity)
+
+* Per-VM traces are colour-cycled through the palette so
+  overlapping lines stay legible.  When at least **two**
+  vms are tracked, a grey **aggregate** line joins each
+  plot (sum across every live vm), and a bold **TOTAL**
+  row is appended to the dashboard.
+
+* **Scale events** on the perf pane render as bold text
+  `"<old>→<new>"` — green for scale-ups, red for scale-downs
+  — placed on the line so operators can see both the direction
+  and the magnitude of every actuation without leaving the
+  plot.
+
+* **Y-axis auto-collapses** to kilos once the value crosses
+  10 000 (e.g. `12.3k`, `1.2M`) so a plot going from idle to
+  6-digit IOPS reads cleanly at both scales.
+
+* The dashboard's `cpu %` column shows `per_thread_util *
+  num_threads * 100`, i.e. total CPU across the whole pool.
+  The `vc=N` suffix on the `id` column is the guest vCPU count
+  the backend reported at discovery time, so operators can
+  eyeball how close `+` will drive the pool to the vCPU cap.
+
+* **Dashboard columns are configurable.**  Press `c` to open
+  a modal checkbox picker; toggle each column on/off with
+  `Space` / `Enter` and move the cursor with `↑` / `↓` (or
+  `j` / `k`).  The default set is `id · thr · iops · bw ·
+  cpu · us/iop · qd · queues`; the read/write latency
+  triples stay off by default because they are noisy on the
+  narrow terminal widths operators typically SSH into.  `id`
+  is a required column (marked `[·]` in the picker) so an
+  operator cannot accidentally hide the vm label.
+
+* The `qd` column reads as `avg/median/total`, computed by
+  the daemon across every SCSI command virtqueue on the
+  freshest snapshot.  A separate `queues` column shows the
+  raw VQ count so `avg/median` are easy to sanity-check.
+  Both show `-` on backends that do not model VQs.
+
+* A `*` suffix on the `thr` column means the vm is
+  currently manual-sticky (the daemon's
+  `manual_scaling_sticky` flag is set).  Rows for vms
+  whose most recent daemon refresh failed (`alive=false`)
+  render dimmed.
+
+### Hotkeys
+
+| Key                     | Effect                                                    |
+|-------------------------|-----------------------------------------------------------|
+| `q`, `Esc`, `Ctrl-C`    | Quit                                                      |
+| `h`, `?`                | Show/hide the modal help overlay                          |
+| `m`                     | Toggle perf pane between IOPS and MB/s                    |
+| `p`, `Space`            | Pause: freezes the X-axis *and* the sampler / rediscovery loops |
+| `r`                     | Prompt for a new refresh cadence in ms (50 – 60 000)      |
+| `c`                     | Open dashboard-columns modal (Space/Enter toggle, ↑↓ move, `c`/`Esc` close) |
+| `t`                     | Cycle theme (default-dark / default-light / vim-desert / solarized-dark / gruvbox) |
+| `1` / `2` / `3` / `4` / `5` | Toggle the perf / lat / cpu / qd / cpu-per-iop pane   |
+| `↑`, `k`                | Focus previous vm — **hides every other line**        |
+| `↓`, `j`                | Focus next vm; last slot is `TOTAL` when >=2          |
+| `Esc`                   | Clear focus (repaint every vm)                        |
+| `+`, `=`                | Ask the daemon to add one thread to the focused vm     |
+| `-`, `_`                | Ask the daemon to remove one thread from the focused vm |
+| `s`                     | Toggle sticky mode for `+` / `-` (title bar shows `[STICKY]`) |
+
+**`+` / `-` always route through the daemon.**  Both
+per-frame stats (via `GetSnapshot`) and manual actuations
+(via `SetThreadCount(vm, threads, sticky)`) go over
+`com.nutanix.io_thread_controller1` on
+`/com/nutanix/io_thread_controller1`, so the daemon is the
+single source of truth for `manual_scaling_sticky`.  A wire
+error on either verb logs at WARN on the `iothread-tui`
+tracing target (and shows up in the daemon journal too) but
+otherwise leaves the UI running so the operator can retry.
+There is no direct-backend fallback path — a missing daemon
+is a fatal condition the binary refuses to start with.
+
+Sticky mode is armed by pressing `s` (toggle).  The title bar
+shows `[STICKY]` while it is on, and every subsequent `+`/`-`
+carries `sticky=true`.  Press `s` again to disarm.  We
+deliberately do **not** wire a `Ctrl-+` / `Ctrl--` variant —
+tmux swallows and rewrites those key events depending on its
+own bindings and they never reach the TUI reliably.
+
+**Focus hides every other line.**  With no focus, every
+vm draws.  Once you focus a vm (`↑`/`↓`, or select
+`TOTAL` on a >=2-vm fleet) the plots repaint with only
+the highlighted line(s) — the plot becomes a solo view of the
+thing you are tracking.  `Esc` clears focus and brings every
+line back.  `+` / `-` are ignored on `TOTAL` because
+broadcasting a scale-op to a room full of VMs is almost always
+a mistake.  Scale annotations (`<old>→<new>`) render on top
+of the line with the direction colour in the foreground (green
+up, red down) *and* the vm's own line colour painted
+behind the glyph, so overlapping annotations across
+close-together lines stay attributable at a glance.
+
+**Themes** (`t` to cycle) swap the per-VM palette, axis
+label colour, and aggregate/accent colours. Five ship: two
+"default" variants tuned for dark and light terminal
+backgrounds, plus vim-desert, solarized-dark, and gruvbox.
+Vm colour assignment is theme-independent, so switching
+themes recolours every trace consistently.
+
+### Command line
+
+```
+iothread-tui [OPTIONS]
+
+  --select <PATTERN>       Substring of the per-VM id
+                           the daemon publishes.
+                           Repeatable; empty list = every
+                           vm the daemon reports.
+  --refresh-secs <SECONDS> `GetSnapshot` poll cadence. Decimals
+                           are accepted; values below 0.05 are
+                           clamped. [default: 1.0]
+  --metric <iops|bandwidth>  Perf pane metric at startup;
+                             toggle at runtime with `m`.
+                             [default: iops]
+  --iop-size <BYTES>       Displayed alongside "IOPS" in the
+                           perf legend (e.g. "IOPS @ 4 KiB").
+                           Purely informational.  [default: 4096]
+  --window-s <SECONDS>     Rolling window shown on the X axis.
+                           [default: 120]
+```
+
+Backend socket paths, libvirt URIs, and the rediscovery
+cadence are all owned by the daemon now (see the
+`backends.d/` config directory).  The TUI has no knobs for
+any of them.
+
+### Examples
+
+Watch every backend the daemon reports, at 500 ms cadence,
+plotting IOPS with the perf + CPU panes on:
+
+```
+iothread-tui --refresh-secs 0.5
+# then press '3' to also open the cpu pane
+```
+
+Follow a single VM by UUID prefix, plotting MB/s over a 60 s
+window:
+
+```
+iothread-tui --select 1615a59c --metric bandwidth --window-s 60
+```
+
+Manually nudge the pool for the focused vm:
+
+```
+# in the TUI: ↓ ↓  to focus vm-3, then '+' three times.
+```
