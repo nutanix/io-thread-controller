@@ -13,6 +13,7 @@ use std::{
 
 use futures_util::future::join_all;
 use procfs::{CurrentSI, ProcError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
@@ -24,6 +25,109 @@ use crate::{
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
 };
+/// Wire-facing container for the D-Bus `GetSnapshot` reply.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotPayload {
+    /// One entry per tracked instance.
+    pub vms: Vec<SnapshotVm>,
+}
+
+/// One tracked instance's freshest state.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotVm {
+    /// Instance / vm identifier.
+    pub id: String,
+    /// Guest vCPU count reported by the backend.
+    pub vcpu_count: u32,
+    /// Backend worker PID.
+    pub pid: i32,
+    /// Current effective thread-pool size.
+    pub thread_count: u32,
+    /// Whether the most recent refresh succeeded.
+    pub alive: bool,
+    /// Whether the backend supplied trustworthy performance data.
+    pub perf_available: bool,
+    /// Average utilisation per worker, as a 0..1 fraction.
+    pub per_thread_util: f64,
+    /// Whether a sticky manual override suppresses automatic scaling.
+    pub manual_scaling_sticky: bool,
+    /// Per-tick read operation rate.
+    pub read_iops: u64,
+    /// Per-tick write operation rate.
+    pub write_iops: u64,
+    /// Per-tick non-read/write operation rate.
+    pub other_iops: u64,
+    /// Per-tick read bandwidth in bytes per second.
+    pub read_bw_bps: u64,
+    /// Per-tick write bandwidth in bytes per second.
+    pub write_bw_bps: u64,
+    /// Read-latency histogram digest, when available.
+    #[serde(default)]
+    pub read_latency_us: Option<SnapshotLatency>,
+    /// Write-latency histogram digest, when available.
+    #[serde(default)]
+    pub write_latency_us: Option<SnapshotLatency>,
+    /// Number of queues represented by `per_vq_depth`.
+    #[serde(default)]
+    pub num_queues: Option<u32>,
+    /// One in-flight depth reading per virtqueue.
+    #[serde(default)]
+    pub per_vq_depth: Option<Vec<u64>>,
+    /// Aggregate virtqueue depth.
+    #[serde(default)]
+    pub qd_total: Option<u64>,
+    /// Average virtqueue depth multiplied by 100.
+    #[serde(default)]
+    pub qd_avg_x100: Option<u64>,
+    /// Median virtqueue depth.
+    #[serde(default)]
+    pub qd_median: Option<u64>,
+    /// Mean per-worker CPU utilisation, in percent.
+    #[serde(default)]
+    pub cpu_pct_avg: Option<u64>,
+    /// Median per-worker CPU utilisation, in percent.
+    #[serde(default)]
+    pub cpu_pct_median: Option<u64>,
+    /// Sum of per-worker CPU utilisation, in percent.
+    #[serde(default)]
+    pub cpu_pct_total: Option<u64>,
+}
+
+/// Serialised latency histogram digest.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotLatency {
+    /// Median latency in microseconds.
+    pub p50: u64,
+    /// 95th-percentile latency in microseconds.
+    pub p95: u64,
+    /// 99th-percentile latency in microseconds.
+    pub p99: u64,
+    /// Histogram-derived arithmetic mean in microseconds.
+    pub avg: u64,
+}
+
+/// Average, median, and aggregate utilisation across sampled workers.
+#[derive(Debug, Clone, Copy)]
+struct CpuStats {
+    /// Mean per-worker utilisation in percent.
+    avg_pct: u64,
+    /// Median per-worker utilisation in percent.
+    median_pct: u64,
+    /// Sum of per-worker utilisation percentages.
+    total_pct: u64,
+}
+
+/// Summarise per-worker utilisation, falling back to aggregate samples.
+fn compute_cpu_stats(s: &crate::instance::InstanceStatus) -> CpuStats {
+    CpuStats {
+        avg_pct: (s.per_thread_util * 100.0).round() as u64,
+        median_pct: (s.per_thread_util * 100.0).round() as u64,
+        total_pct: (s.per_thread_util * s.thread_count as f64 * 100.0).round() as u64,
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ControllerError {
@@ -160,6 +264,9 @@ impl Controller {
                     .map_err(|error| error.to_string());
                 let _ = reply.send(result);
             }
+            DbusRequest::GetSnapshot { reply } => {
+                let _ = reply.send(self.handle_get_snapshot().await);
+            }
             DbusRequest::GetIoThreadVqMapping { vm, device, reply } => {
                 let result = match self.instances.get(&vm) {
                     Some(instance) => instance
@@ -259,6 +366,50 @@ impl Controller {
         status.thread_count = threads;
         status.manual_scaling_sticky = sticky;
         Ok(())
+    }
+
+    /// Assemble the machine-readable fleet snapshot.
+    async fn handle_get_snapshot(&self) -> String {
+        let mut payload = SnapshotPayload {
+            vms: Vec::with_capacity(self.instances.len()),
+        };
+        let ids: Vec<_> = self.instances.keys().collect();
+        for id in ids {
+            let instance = &self.instances[id];
+            let s = instance.status.read().await;
+            let cpu_stats = compute_cpu_stats(&s);
+            payload.vms.push(SnapshotVm {
+                id: id.clone(),
+                vcpu_count: s.vcpu_count,
+                pid: instance.pid,
+                thread_count: s.thread_count,
+                alive: s.alive,
+                perf_available: s.perf.is_some(),
+                // Guard JSON serialization: NaN/inf are not valid JSON numbers.
+                per_thread_util: if s.per_thread_util.is_finite() {
+                    s.per_thread_util
+                } else {
+                    0.0
+                },
+                manual_scaling_sticky: s.manual_scaling_sticky,
+                read_iops: s.read_iops,
+                write_iops: s.write_iops,
+                other_iops: s.other_iops,
+                read_bw_bps: s.read_bytes_per_second,
+                write_bw_bps: s.write_bytes_per_second,
+                read_latency_us: None,
+                write_latency_us: None,
+                num_queues: None,
+                per_vq_depth: None,
+                qd_total: None,
+                qd_avg_x100: None,
+                qd_median: None,
+                cpu_pct_avg: Some(cpu_stats.avg_pct),
+                cpu_pct_median: Some(cpu_stats.median_pct),
+                cpu_pct_total: Some(cpu_stats.total_pct),
+            });
+        }
+        serde_json::to_string(&payload).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
     /// Refresh the fleet, evaluate one coherent plan, and apply eligible work.
