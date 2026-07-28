@@ -79,9 +79,13 @@ pub struct Config {
     /// the cap.
     #[serde(default = "default_max_instances_adjusted_per_poll")]
     pub max_instances_adjusted_per_poll: u32,
+    /// Opt in to sampling `/proc/pressure/{cpu,io,memory}` on
     /// every tick and exposing it to the active engine.
     #[serde(default)]
     pub experimental_psi_monitoring: bool,
+    /// When true, re-read cgroup limits on each CPU sample.
+    #[serde(default)]
+    pub refresh_cgroup_on_each_read: bool,
     /// When true, log the scaling verdict but skip the actuation
     /// call to `set_thread_count`.
     #[serde(default)]
@@ -144,6 +148,7 @@ impl Default for Config {
             print_status_header: false,
             max_instances_adjusted_per_poll: default_max_instances_adjusted_per_poll(),
             experimental_psi_monitoring: false,
+            refresh_cgroup_on_each_read: false,
             dry_run: false,
         }
     }
@@ -351,5 +356,17 @@ mod tests {
 
         let serialized = serde_json::to_string(&cfg).unwrap();
         assert!(serialized.contains(r#""host_cpu_scale_up_ceiling_percent":90.0"#));
+    }
+
+    /// Test that `refresh_cgroup_on_each_read` defaults to false in
+    /// `Default` and empty JSON.
+    #[test]
+    fn cgroup_refresh_defaults_to_false() {
+        assert!(!Config::default().refresh_cgroup_on_each_read);
+        let from_json: Config = serde_json::from_str(
+            r#"{"engine": "foo", "engine_config_dir": "/engines", "backend_config_dir": "/backends", "scale_poll_secs": 10, "vm_state_path": "/path/to/vm-state"}"#,
+        )
+        .unwrap();
+        assert!(!from_json.refresh_cgroup_on_each_read);
     }
 }
