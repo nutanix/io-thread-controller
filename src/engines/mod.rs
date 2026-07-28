@@ -38,6 +38,17 @@ pub enum EngineError {
     NoSuchEngine(String),
 }
 
+/// Host pressure-stall information sampled from `/proc/pressure`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PsiSample {
+    /// CPU `some.avg10` percentage.
+    pub cpu_some_avg10: f64,
+    /// I/O `some.avg10` percentage.
+    pub io_some_avg10: f64,
+    /// Memory `some.avg10` percentage.
+    pub memory_some_avg10: f64,
+}
+
 /// Scaling operation selected by an engine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleAction {
@@ -88,6 +99,8 @@ pub struct EngineTickContext {
     /// Host-wide CPU utilisation (0.0-1.0) from successive `/proc/stat`
     /// samples; zero until two samples exist.
     pub host_cpu_util: f64,
+    /// Latest host pressure-stall snapshot.
+    pub psi: PsiSample,
     /// Monotonically increasing tick sequence number.
     pub tick_index: u64,
 }

@@ -144,6 +144,12 @@ through `virDomainQemuMonitorCommand`. Its configuration is loaded from
 `backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
 or changed through the backend CLI and D-Bus operations.
 
+## Experimental PSI monitoring
+
+With `experimental_psi_monitoring` enabled, each tick samples the CPU, I/O, and
+memory `some.avg10` values from `/proc/pressure` and exposes them to the active
+scaling engine. Sampling is disabled by default.
+
 ## Status line
 
 Every tick the daemon emits one INFO line per tracked VM and one aggregate line
