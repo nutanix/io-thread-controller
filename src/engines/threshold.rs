@@ -498,7 +498,7 @@ mod tests {
     use super::{ThresholdConfig, ThresholdEngine, log_performance_revert};
     use crate::{
         backends::BackendClientError,
-        engines::{AppliedOutcome, EngineTickContext, ScaleAction, ScalingEngine},
+        engines::{AppliedOutcome, EngineTickContext, PsiSample, ScaleAction, ScalingEngine},
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
@@ -561,6 +561,7 @@ mod tests {
                 min_thread_count: 2,
                 max_thread_count: 8,
                 host_cpu_util: 0.0,
+                psi: PsiSample::default(),
                 tick_index: 0,
             }
         }
