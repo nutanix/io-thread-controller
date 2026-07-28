@@ -21,7 +21,9 @@ use crate::{
     backends::{BackendClientError, IoThreadProperties, VqMapping},
     config::Config,
     dbus::DbusRequest,
-    engines::{AppliedOutcome, BlockedReason, EngineTickContext, ScaleAction, ScalingEngine},
+    engines::{
+        AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
+    },
     instance::{Instance, InstanceStatus},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
@@ -199,6 +201,8 @@ pub struct Controller {
     last_host_cpu: Option<HostCpuSample>,
     /// Fraction of host CPU consumed since the previous tick.
     host_cpu_util: f64,
+    /// Latest host pressure-stall snapshot.
+    psi: PsiSample,
 }
 
 impl Controller {
@@ -215,6 +219,7 @@ impl Controller {
             tick_index: 0,
             last_host_cpu: None,
             host_cpu_util: 0.0,
+            psi: PsiSample::default(),
         })
     }
 
@@ -475,11 +480,15 @@ impl Controller {
             }
             self.last_host_cpu = Some(current);
         }
+        if self.cfg.experimental_psi_monitoring {
+            self.psi = read_psi_sample();
+        }
         let context = EngineTickContext {
             now: Instant::now(),
             min_thread_count: self.cfg.min_thread_count,
             max_thread_count: self.cfg.max_thread_count,
             host_cpu_util: self.host_cpu_util,
+            psi: self.psi,
             tick_index: self.tick_index,
         };
         let fleet: Vec<_> = self.instances.values().cloned().collect();
@@ -819,6 +828,23 @@ impl Controller {
                 }),
             ""
         );
+    }
+}
+
+/// Read CPU, I/O, and memory pressure; unavailable values become zero.
+fn read_psi_sample() -> PsiSample {
+    use procfs::{CpuPressure, Current, IoPressure, MemoryPressure};
+
+    PsiSample {
+        cpu_some_avg10: CpuPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
+        io_some_avg10: IoPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
+        memory_some_avg10: MemoryPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
     }
 }
 
