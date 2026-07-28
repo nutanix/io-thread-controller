@@ -4,5 +4,6 @@
   "max_scale_down_step": 0,
   "scale_up_min_gain_percent": 5,
   "scale_down_revert_drop_percent": 3,
-  "scale_validation_sample_polls": 3
+  "scale_validation_sample_polls": 3,
+  "block_scale_up_when_cgroup_throttled": true
 }
