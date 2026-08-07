@@ -12,6 +12,11 @@ use inotify::{Inotify, WatchMask};
 use thiserror::Error;
 use tokio::time::{MissedTickBehavior, interval};
 
+pub const VERSION: &str = match option_env!("IO_THREAD_CONTROLLER_VERSION") {
+    Some(v) => v,
+    None => "unknown",
+};
+
 use crate::{
     backends::Backend,
     config::Config,
@@ -48,6 +53,11 @@ const INOTIFY_EVENT_BUF_SIZE: usize = 32 * 1024;
 
 /// Run until SIGTERM or SIGINT.
 pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), DaemonError> {
+    tracing::info!(
+        target: "controller",
+        version = VERSION,
+        "io-thread-controller starting"
+    );
     if cfg.print_status_header {
         tracing::info!(
             target: "status",

@@ -12,6 +12,7 @@
 //! Verbs currently exposed:
 //!   * debug-only `SetThreadCount(vm, threads, sticky)`;
 //!   * read-only `GetStats()`;
+//!   * read-only `GetVersion()`;
 //!   * named-IOThread and virtqueue-mapping operations for clients that support
 //!     them.
 
@@ -60,6 +61,11 @@ pub enum DbusRequest {
     GetSnapshot {
         /// Reply channel; JSON-encoded
         /// [`crate::controller::SnapshotPayload`] on success.
+        reply: oneshot::Sender<String>,
+    },
+    /// Return the controller binary version string.
+    GetVersion {
+        /// Reply channel carrying the version string.
         reply: oneshot::Sender<String>,
     },
     /// Read the current virtqueue-to-IOThread mapping.
@@ -187,6 +193,20 @@ impl Service {
             .send(DbusRequest::GetSnapshot { reply: tx })
             .await
             .map_err(|_| zbus::fdo::Error::Failed("engine channel closed".into()))?;
+        await_with_timeout(rx).await
+    }
+
+    /// D-Bus wire signature: `GetVersion() -> s`.
+    ///
+    /// Returns the controller binary version string (same source as startup
+    /// logs), exposed separately so high-frequency snapshot payloads stay
+    /// focused on dynamic metrics.
+    async fn get_version(&self) -> zbus::fdo::Result<String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::GetVersion { reply: tx })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
         await_with_timeout(rx).await
     }
 

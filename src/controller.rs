@@ -278,6 +278,9 @@ impl Controller {
             DbusRequest::GetSnapshot { reply } => {
                 let _ = reply.send(self.handle_get_snapshot().await);
             }
+            DbusRequest::GetVersion { reply } => {
+                let _ = reply.send(env!("CARGO_PKG_VERSION").to_string());
+            }
             DbusRequest::GetIoThreadVqMapping { vm, device, reply } => {
                 let result = match self.instances.get(&vm) {
                     Some(instance) => instance
@@ -559,8 +562,10 @@ impl Controller {
                 .await;
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
-                ""
+                event = "scale_blocked",
+                reason = "manual_override",
+                vm = %instance.id,
+                action = %action
             );
             return Ok(());
         }
@@ -570,8 +575,10 @@ impl Controller {
                 .await;
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
-                ""
+                event = "scale_blocked",
+                reason = "unmanaged_vm",
+                vm = %instance.id,
+                action = %action
             );
             return Ok(());
         }
@@ -664,10 +671,12 @@ impl Controller {
                     .await;
                 tracing::info!(
                     target: "controller",
-                    id = %instance.id,
-                    %action,
+                    event = "scale_applied",
+                    vm = %instance.id,
+                    action = %action,
                     target,
-                    ""
+                    prev_thread_count = previous_count,
+                    prev_io_count_total = previous_io_count
                 );
             }
             Err(error) => {
@@ -677,11 +686,11 @@ impl Controller {
                     .await;
                 tracing::warn!(
                     target: "controller",
-                    id = %instance.id,
-                    %action,
+                    event = "scale_failed",
+                    vm = %instance.id,
+                    action = %action,
                     target,
-                    error = %error_text,
-                    ""
+                    error = %error_text
                 );
             }
         }

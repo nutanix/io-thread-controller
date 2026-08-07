@@ -12,7 +12,7 @@ use io_thread_controller::{
     backends::BackendClientError,
     backends::registered_backends,
     config::{Config, ConfigError, dump_default_config, load_config, validate_config},
-    daemon::{DaemonError, run},
+    daemon::{DaemonError, VERSION, run},
     util::Path,
 };
 use thiserror::Error;
@@ -37,6 +37,11 @@ enum IoThreadControllerError {
 
 #[derive(Debug, Parser)]
 #[command(
+    // Populated at build time by `build.rs` from the git tree
+    // (short hash, with `-dirty` when the tree had uncommitted
+    // changes).  Falls back to `CARGO_PKG_VERSION` for tarball
+    // builds where `.git` is absent.
+    version = VERSION,
     name = "io-thread-controller",
     about = "Measure VM I/O workers and resize their pools through a selectable scaling engine."
 )]
