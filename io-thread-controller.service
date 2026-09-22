@@ -1,0 +1,16 @@
+[Unit]
+Description=I/O thread controller - dynamic I/O worker scaling
+After=network.target dbus.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.nutanix.io_thread_controller1
+# The daemon honours the RUST_LOG env var, e.g. `Environment=RUST_LOG=debug`.
+ExecStart=/usr/libexec/io-thread-controller
+Restart=on-failure
+RestartSec=5s
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

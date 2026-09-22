@@ -1,0 +1,13 @@
+{
+  "scale_poll_secs": 10.0,
+  "enable_per_vm_status_line": true,
+  "enable_aggregate_status_line": true,
+  "min_thread_count": 1,
+  "max_thread_count": 8,
+  "host_cpu_scale_up_ceiling_percent": 90,
+  "cooldown_secs": 10.0,
+  "engine": "threshold",
+  "engine_config_dir": "/etc/io-thread-controller.d/engines",
+  "backend_config_dir": "/etc/io-thread-controller.d/backends"
+  "vm_state_path": "/run/io-thread-controller/vm-ownership.json"
+}

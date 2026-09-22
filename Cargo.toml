@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 Nutanix, Inc. All rights reserved.
+#
+# Author: Thanos Makatos <thanos.makatos@nutanix.com>
+
+[package]
+name = "io-thread-controller"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Discovers virtual I/O backends and dynamically scales their I/O thread pools."
+license = "BSD-3-Clause"
+resolver = "3"
+
+[[bin]]
+name = "io-thread-controller"
+path = "src/main.rs"
+
+[lib]
+name = "io_thread_controller"
+path = "src/lib.rs"
+
+# Feature flags.
+[features]
+default = ["threshold-engine"]
+threshold-engine = []
+
+[dependencies]
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "fs",
+    "io-util",
+    "time",
+    "signal",
+    "sync",
+    "process",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "std",
+    "env-filter",
+] }
+inotify = { version = "0.10", default-features = false, features = ["stream"] }
+async-trait = "0.1"
+futures-util = "0.3"
+procfs = { version = "0.17", default-features = false }
+sanitize-filename = "0.6.0"
+regex = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+# latest versions that support Rust 1.84
+clap = { version = "=4.5.61", features = ["derive", "env"] }
+clap_lex = "=1.0.1"
+getrandom = "=0.3.4"
+wasip2 = "=1.0.1+wasi-0.2.4"
+linkme = "0.3.37"
+lazy_static = "1.5.0"
+glob = "0.3.4"
+rstest = "0.26.1"
+test-log = { version = "0.2.21", features = ["trace"] }
+
+[dev-dependencies]
+tempfile = "=3.14.0"
+tokio = { version = "1", features = ["test-util"] }
