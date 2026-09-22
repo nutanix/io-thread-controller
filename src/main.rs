@@ -7,7 +7,7 @@
 
 use std::io::ErrorKind;
 
-use clap::Parser;
+use clap::{self, CommandFactory, FromArgMatches, Parser};
 use io_thread_controller::{
     backends::BackendClientError,
     backends::registered_backends,
@@ -20,6 +20,9 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 enum IoThreadControllerError {
     #[error(transparent)]
+    Clap(#[from] clap::error::Error),
+
+    #[error(transparent)]
     Config(#[from] ConfigError),
 
     #[error(transparent)]
@@ -27,6 +30,9 @@ enum IoThreadControllerError {
 
     #[error(transparent)]
     Daemon(#[from] DaemonError),
+
+    #[error("no backend `{0}`")]
+    NoSuchBackend(String),
 }
 
 #[derive(Debug, Parser)]
@@ -54,7 +60,16 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), IoThreadControllerError> {
-    let cli = Cli::parse();
+    let bootstrap_cfg = Config::default();
+    let bootstrap_backends = registered_backends(&bootstrap_cfg)?;
+    let mut command = Cli::command();
+    for backend in &bootstrap_backends {
+        if let Some(subcommand) = backend.cli_subcommand() {
+            command = command.subcommand(subcommand);
+        }
+    }
+    let matches = command.get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     init_logging(&cli.log_level);
 
     if cli.dump_config {
@@ -62,7 +77,17 @@ async fn main() -> Result<(), IoThreadControllerError> {
         return Ok(());
     }
 
-    let cfg = load_daemon_config(&cli.config)?;
+    if let Some((name, subcommand_matches)) = matches.subcommand() {
+        for backend in &bootstrap_backends {
+            if backend
+                .cli_subcommand()
+                .is_some_and(|command| command.get_name() == name)
+            {
+                return Ok(backend.run_cli(subcommand_matches).await?);
+            }
+        }
+        return Err(IoThreadControllerError::NoSuchBackend(name.to_string()));
+    }
 
     let mut cfg = load_daemon_config(&cli.config)?;
     if cli.print_status_header {

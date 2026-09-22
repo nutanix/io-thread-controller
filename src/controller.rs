@@ -16,7 +16,7 @@ use procfs::{CurrentSI, ProcError};
 use thiserror::Error;
 
 use crate::{
-    backends::BackendClientError,
+    backends::{BackendClientError, IoThreadProperties, VqMapping},
     config::Config,
     dbus::DbusRequest,
     engines::{AppliedOutcome, BlockedReason, EngineTickContext, ScaleAction, ScalingEngine},
@@ -158,6 +158,73 @@ impl Controller {
                     .handle_set_thread_count(&vm, threads, sticky)
                     .await
                     .map_err(|error| error.to_string());
+                let _ = reply.send(result);
+            }
+            DbusRequest::GetIoThreadVqMapping { vm, device, reply } => {
+                let result = match self.instances.get(&vm) {
+                    Some(instance) => instance
+                        .client
+                        .get_io_thread_vq_mapping(&device)
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|mapping| {
+                            serde_json::to_string(&mapping)
+                                .map_err(|error| format!("serialize mapping: {error}"))
+                        }),
+                    None => Err(format!("unknown VM {vm}")),
+                };
+                let _ = reply.send(result);
+            }
+            DbusRequest::AddIoThread {
+                vm,
+                id,
+                poll_max_ns,
+                reply,
+            } => {
+                let result = match self.instances.get(&vm) {
+                    Some(instance) => {
+                        let properties = (poll_max_ns >= 0).then(|| IoThreadProperties {
+                            poll_max_ns: Some(poll_max_ns),
+                            ..Default::default()
+                        });
+                        instance
+                            .client
+                            .add_io_thread(&id, properties.as_ref())
+                            .await
+                            .map_err(|error| error.to_string())
+                    }
+                    None => Err(format!("unknown VM {vm}")),
+                };
+                let _ = reply.send(result);
+            }
+            DbusRequest::DelIoThread { vm, id, reply } => {
+                let result = match self.instances.get(&vm) {
+                    Some(instance) => instance
+                        .client
+                        .del_io_thread(&id)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    None => Err(format!("unknown VM {vm}")),
+                };
+                let _ = reply.send(result);
+            }
+            DbusRequest::SetIoThreadVqMapping {
+                vm,
+                device,
+                mapping_json,
+                reply,
+            } => {
+                let result = match serde_json::from_str::<Vec<VqMapping>>(&mapping_json) {
+                    Ok(mapping) => match self.instances.get(&vm) {
+                        Some(instance) => instance
+                            .client
+                            .set_io_thread_vq_mapping(&device, &mapping)
+                            .await
+                            .map_err(|error| error.to_string()),
+                        None => Err(format!("unknown VM {vm}")),
+                    },
+                    Err(error) => Err(format!("parse mapping JSON: {error}")),
+                };
                 let _ = reply.send(result);
             }
         }

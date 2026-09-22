@@ -72,6 +72,9 @@ pub struct Config {
     /// tracked instance on every tick (default `true`).
     #[serde(default = "default_true")]
     pub enable_aggregate_status_line: bool,
+    /// Emit a one-time legend for status-line fields at startup.
+    #[serde(default)]
+    pub print_status_header: bool,
 }
 
 fn default_true() -> bool {
@@ -123,6 +126,7 @@ impl Default for Config {
             vm_state_path: Path::new("/run/io-thread-controller/vm-ownership.json"),
             enable_per_vm_status_line: true,
             enable_aggregate_status_line: true,
+            print_status_header: false,
         }
     }
 }
