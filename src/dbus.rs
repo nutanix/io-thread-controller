@@ -5,9 +5,14 @@
 
 //! D-Bus surface for operator-facing verbs.
 //!
-//! Initial scope: SetThreadCount.  QEMU-specific verbs
-//! (GetIOThreadVqMapping, AddIOThread, DelIOThread,
-//! SetIOThreadVqMapping) land in later commits.
+//! The module defines a flat request enum ([`DbusRequest`]) and hands each
+//! request to the controller over an mpsc channel. The controller finds the
+//! target VM and dispatches through its [`crate::instance::InstanceClient`].
+//!
+//! Verbs currently exposed:
+//!   * debug-only `SetThreadCount(vm, threads, sticky)`;
+//!   * named-IOThread and virtqueue-mapping operations for clients that support
+//!     them.
 
 use std::time::Duration;
 
@@ -24,7 +29,7 @@ pub const DBUS_INTERFACE: &str = "com.nutanix.io_thread_controller1";
 pub const DBUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Cross-thread message shape: each variant matches one D-Bus
-/// method.  The controller task pulls these off, services them
+/// method. The engine task pulls these off, services them
 /// serially, and replies through the embedded oneshot channel.
 #[derive(Debug)]
 pub enum DbusRequest {
@@ -40,6 +45,47 @@ pub enum DbusRequest {
         /// cleared.
         sticky: bool,
         /// One-shot channel used to complete the D-Bus method call.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Read the current virtqueue-to-IOThread mapping.
+    GetIoThreadVqMapping {
+        /// Instance / vm id to address.
+        vm: String,
+        /// QOM device path whose mapping should be read.
+        device: String,
+        /// Reply channel carrying a JSON-encoded mapping.
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// Create a named IOThread object.
+    AddIoThread {
+        /// Instance / vm id to address.
+        vm: String,
+        /// QOM identifier of the new IOThread.
+        id: String,
+        /// poll-max-ns override, or `-1` for "leave default".
+        poll_max_ns: i64,
+        /// Reply channel carrying success or an error message.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Delete a named IOThread object.
+    DelIoThread {
+        /// Instance / vm id to address.
+        vm: String,
+        /// QOM identifier of the IOThread to remove.
+        id: String,
+        /// Reply channel carrying success or an error message.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Replace a device's virtqueue-to-IOThread mapping.
+    SetIoThreadVqMapping {
+        /// Instance / vm id to address.
+        vm: String,
+        /// QOM device path whose mapping should be replaced.
+        device: String,
+        /// JSON-encoded `Vec<VqMapping>` (kept as a string so
+        /// the D-Bus signature stays trivial).
+        mapping_json: String,
+        /// Reply channel carrying success or an error message.
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -60,7 +106,6 @@ impl Service {
 }
 
 /// Wait for a controller reply while enforcing the D-Bus request timeout.
-#[cfg(debug_assertions)]
 async fn await_with_timeout<T>(rx: oneshot::Receiver<T>) -> Result<T, zbus::fdo::Error> {
     match tokio::time::timeout(DBUS_REQUEST_TIMEOUT, rx).await {
         Ok(Ok(v)) => Ok(v),
@@ -89,6 +134,81 @@ impl Service {
                 vm,
                 threads,
                 sticky,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        match await_with_timeout(rx).await? {
+            Ok(()) => Ok(()),
+            Err(e) => Err(zbus::fdo::Error::Failed(e)),
+        }
+    }
+    async fn get_io_thread_vq_mapping(
+        &self,
+        vm: String,
+        device: String,
+    ) -> zbus::fdo::Result<String> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::GetIoThreadVqMapping {
+                vm,
+                device,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        match await_with_timeout(rx).await? {
+            Ok(v) => Ok(v),
+            Err(e) => Err(zbus::fdo::Error::Failed(e)),
+        }
+    }
+
+    async fn add_io_thread(
+        &self,
+        vm: String,
+        id: String,
+        poll_max_ns: i64,
+    ) -> zbus::fdo::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::AddIoThread {
+                vm,
+                id,
+                poll_max_ns,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        match await_with_timeout(rx).await? {
+            Ok(()) => Ok(()),
+            Err(e) => Err(zbus::fdo::Error::Failed(e)),
+        }
+    }
+
+    async fn del_io_thread(&self, vm: String, id: String) -> zbus::fdo::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::DelIoThread { vm, id, reply: tx })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        match await_with_timeout(rx).await? {
+            Ok(()) => Ok(()),
+            Err(e) => Err(zbus::fdo::Error::Failed(e)),
+        }
+    }
+
+    async fn set_io_thread_vq_mapping(
+        &self,
+        vm: String,
+        device: String,
+        mapping_json: String,
+    ) -> zbus::fdo::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::SetIoThreadVqMapping {
+                vm,
+                device,
+                mapping_json,
                 reply: tx,
             })
             .await

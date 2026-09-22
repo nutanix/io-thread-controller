@@ -18,7 +18,11 @@ use regex::Regex;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use crate::{backends::BackendClientError, rolling::RollingMetrics, util::Path};
+use crate::{
+    backends::{BackendClientError, IoThreadProperties, VqMapping},
+    rolling::RollingMetrics,
+    util::Path,
+};
 
 #[derive(Debug, Error)]
 pub enum InstanceError {
@@ -46,6 +50,43 @@ pub trait InstanceClient: Send + Sync {
 
     /// Close or invalidate the underlying transport.
     async fn close(&self);
+
+    /// Create a named IOThread.
+    async fn add_io_thread(
+        &self,
+        _id: &str,
+        _properties: Option<&IoThreadProperties>,
+    ) -> Result<(), BackendClientError> {
+        Err(BackendClientError::NotSupported("add IOThread".to_string()))
+    }
+
+    /// Delete a named IOThread.
+    async fn del_io_thread(&self, _id: &str) -> Result<(), BackendClientError> {
+        Err(BackendClientError::NotSupported(
+            "delete IOThread".to_string(),
+        ))
+    }
+
+    /// Replace a device's virtqueue-to-IOThread mapping.
+    async fn set_io_thread_vq_mapping(
+        &self,
+        _device: &str,
+        _mapping: &[VqMapping],
+    ) -> Result<(), BackendClientError> {
+        Err(BackendClientError::NotSupported(
+            "set IOThread virtqueue mapping".to_string(),
+        ))
+    }
+
+    /// Fetch a device's virtqueue-to-IOThread mapping.
+    async fn get_io_thread_vq_mapping(
+        &self,
+        _device: &str,
+    ) -> Result<Vec<VqMapping>, BackendClientError> {
+        Err(BackendClientError::NotSupported(
+            "get IOThread virtqueue mapping".to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -78,7 +119,7 @@ pub struct Instance {
     pub sock_path: Path,
     /// Backend process ID.
     pub pid: i32,
-    /// Backend-selected task names included in CPU sampling.
+    /// Backend-selected task names included in fallback CPU sampling.
     pub thread_name_filter: ThreadNameFilter,
     /// Per-VM backend implementation.
     pub client: Box<dyn InstanceClient>,

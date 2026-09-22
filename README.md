@@ -125,6 +125,73 @@ IOPS gained at least `scale_up_min_gain_percent`; a scale-down is reverted when
 IOPS lost more than `scale_down_revert_drop_percent`. Setting either percentage
 to zero disables that direction's validation.
 
+## QEMU backend
+
+The QEMU backend discovers active VMs through libvirt and sends QMP commands
+through `virDomainQemuMonitorCommand`. Its configuration is loaded from
+`backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
+or changed through the backend CLI and D-Bus operations.
+
+## Status line
+
+Every tick the daemon emits one INFO line per tracked VM and one aggregate line
+on the `status` tracing target. With `--print-status-header`, it also emits a
+`#`-prefixed legend on startup.
+
+### Per-VM line
+
+The examples are wrapped with backslashes for readability; each emitted record
+occupies one line.
+
+```
+INFO vm=vm-a thr=4 iops=155593/0/0 bw_mb_s=20394/0 \
+  cpu=90/358 iops_1_5_15m=154995/153840/151220 \
+  cpu_us_per_io_1_5_15m=23/16/19
+```
+
+- `vm`: VM identifier.
+- `thr`: matched worker threads.
+- `iops`: current read / write / other operations per second.
+- `iops_1_5_15m`: average total IOPS over rolling 1m / 5m / 15m windows.
+- `bw_mb_s`: current read / write bandwidth in MB/s.
+- `cpu`: average per-thread / total pool CPU percentage.
+- `cpu_us_per_io_1_5_15m`: CPU microseconds per completed I/O over the same
+  windows.
+
+A dash (`-`) means no complete sample is available for that window.
+
+### Aggregate line
+
+```
+INFO tracked=1 total_threads=4 \
+  iops_1_5_15m=154995/153840/151220 aggregate
+```
+
+`tracked` is the current VM count, `total_threads` is their combined worker
+count, and each aggregate IOPS cell is the sum of the corresponding per-VM
+rolling rate.
+
+### Scaling verdicts
+
+When the threshold engine decides to change the thread count
+you get one INFO line on the `engine` target using the same
+`vm=<id>` convention as the status lines:
+
+```
+INFO vm=vm-1615a59c-... util=0.8955 action="up" thr=4->5
+```
+
+`vm` is the same identifier used by status lines, `util` is
+the per-thread utilisation that triggered the decision, `action`
+is `up`, `down`, or `revert`, and `thr` is the requested
+`<old>-><new>` transition.
+
+Failed actuations (backend rejected the `SetThreadCount` call)
+surface as a WARN on the `controller` target with the same
+`vm=..., dir=..., from=..., to=..., error=...` shape; the
+success path is intentionally silent because the engine's
+own INFO already describes the move.
+
 ## D-Bus
 
 The daemon owns:
@@ -148,3 +215,7 @@ busctl --system call \
 
 Release builds do not expose this method. The shipped D-Bus policy restricts
 the debug method to root.
+
+Backends that support named IOThreads can also expose
+`GetIoThreadVqMapping`, `AddIoThread`, `DelIoThread`, and
+`SetIoThreadVqMapping`.

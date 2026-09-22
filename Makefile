@@ -56,6 +56,8 @@ install: $(TARGET)
 		${DESTDIR}/etc/io-thread-controller.json
 	install -D -m 0644 io-thread-controller.d/engines/threshold.json \
 		${DESTDIR}/etc/io-thread-controller.d/engines/threshold.json
+	install -D -m 0644 io-thread-controller.d/backends/qemu.json \
+		${DESTDIR}/etc/io-thread-controller.d/backends/qemu.json
 	install -D -m 0644 io-thread-controller.service \
 		${DESTDIR}/usr/lib/systemd/system/io-thread-controller.service
 	install -D -m 0644 com.nutanix.io_thread_controller.conf \
