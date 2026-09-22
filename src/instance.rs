@@ -18,7 +18,7 @@ use regex::Regex;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use crate::{backends::BackendClientError, util::Path};
+use crate::{backends::BackendClientError, rolling::RollingMetrics, util::Path};
 
 #[derive(Debug, Error)]
 pub enum InstanceError {
@@ -152,17 +152,22 @@ impl Instance {
 
     /// Apply one successful thread-pool snapshot to this instance.
     async fn apply_thread_pool_snapshot(&self, snapshot: ThreadPoolSnapshot) -> bool {
-        let cpu = match read_cpu_sample(self.pid, &self.thread_name_filter) {
-            Ok(sample) => Some(sample),
-            Err(error) => {
-                tracing::warn!(
-                    target: "controller",
-                    %error,
-                    "failed to sample backend task CPU"
-                );
-                None
+        let cpu = if snapshot.per_thread_util.is_none() {
+            match read_cpu_sample(self.pid, &self.thread_name_filter) {
+                Ok(sample) => Some(sample),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "controller",
+                        %error,
+                        "failed to sample backend task CPU"
+                    );
+                    None
+                }
             }
+        } else {
+            None
         };
+        let now = Instant::now();
         let mut status = self.status.write().await;
         if status.ownership_classification.is_none() {
             status.ownership_classification = Some(
@@ -170,11 +175,14 @@ impl Instance {
                     .initial_pool_is_managed(snapshot.thread_count, snapshot.vcpu_count),
             );
         }
+        Self::update_perf_rates(&mut status, &snapshot.perf, now);
         status.thread_count = snapshot.thread_count;
         status.vcpu_count = snapshot.vcpu_count;
         status.perf = snapshot.perf;
         status.alive = true;
-        if let (Some(prev), Some(cur)) = (status.last_cpu_sample.as_ref(), cpu.as_ref())
+        if let Some(per_thread_util) = snapshot.per_thread_util {
+            status.per_thread_util = per_thread_util.clamp(0.0, 1.0);
+        } else if let (Some(prev), Some(cur)) = (status.last_cpu_sample.as_ref(), cpu.as_ref())
             && prev.thread_count == cur.thread_count
             && cur.thread_count > 0
             && let Some(d_ticks) = cur.cpu_ticks.checked_sub(prev.cpu_ticks)
@@ -194,8 +202,74 @@ impl Instance {
         }
         // A changed task count invalidates the delta. Keep the last
         // utilisation until the next like-for-like sample.
+        let io_ops_total = match snapshot.perf {
+            Some(perf) => perf
+                .read_io_count
+                .saturating_add(perf.write_io_count)
+                .saturating_add(perf.other_io_count),
+            None => 0,
+        };
+        if let Some(per_thread_util) = snapshot.per_thread_util {
+            status.rolling.push_from_backend_util(
+                now,
+                io_ops_total,
+                per_thread_util,
+                snapshot.thread_count,
+            );
+        } else if let Some(current) = cpu.as_ref() {
+            status.rolling.push_from_procfs_delta(
+                now,
+                io_ops_total,
+                current.cpu_ticks,
+                *TICKS_PER_SECOND,
+            );
+        }
         status.last_cpu_sample = cpu;
         true
+    }
+
+    /// Refresh per-tick rates from cumulative backend counters.
+    fn update_perf_rates(
+        status: &mut InstanceStatus,
+        perf: &Option<InstancePerfSample>,
+        now: Instant,
+    ) {
+        let (read_io_count, write_io_count, other_io_count, read_bytes_total, write_bytes_total) =
+            match perf {
+                Some(perf) => (
+                    perf.read_io_count,
+                    perf.write_io_count,
+                    perf.other_io_count,
+                    perf.read_bytes_total,
+                    perf.write_bytes_total,
+                ),
+                None => (0, 0, 0, 0, 0),
+            };
+        if let Some(previous_time) = status.previous_perf_time {
+            let elapsed_ns = now
+                .checked_duration_since(previous_time)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            if elapsed_ns > 0 {
+                let rate = |current: u64, previous: u64| -> u64 {
+                    let delta = current.saturating_sub(previous);
+                    ((delta as u128).saturating_mul(1_000_000_000) / elapsed_ns) as u64
+                };
+                status.read_iops = rate(read_io_count, status.previous_read_io_count);
+                status.write_iops = rate(write_io_count, status.previous_write_io_count);
+                status.other_iops = rate(other_io_count, status.previous_other_io_count);
+                status.read_bytes_per_second =
+                    rate(read_bytes_total, status.previous_read_bytes_total);
+                status.write_bytes_per_second =
+                    rate(write_bytes_total, status.previous_write_bytes_total);
+            }
+        }
+        status.previous_perf_time = Some(now);
+        status.previous_read_io_count = read_io_count;
+        status.previous_write_io_count = write_io_count;
+        status.previous_other_io_count = other_io_count;
+        status.previous_read_bytes_total = read_bytes_total;
+        status.previous_write_bytes_total = write_bytes_total;
     }
 }
 
@@ -259,6 +333,30 @@ pub struct InstanceStatus {
     pub per_thread_util: f64,
     /// Previous cumulative CPU sample used to compute a delta.
     pub last_cpu_sample: Option<CpuSample>,
+    /// Bounded 1m/5m/15m I/O and CPU history.
+    pub rolling: RollingMetrics,
+    /// Time of the previous backend performance snapshot.
+    pub previous_perf_time: Option<Instant>,
+    /// Previous cumulative read count.
+    pub previous_read_io_count: u64,
+    /// Previous cumulative write count.
+    pub previous_write_io_count: u64,
+    /// Previous cumulative other-operation count.
+    pub previous_other_io_count: u64,
+    /// Previous cumulative read-byte count.
+    pub previous_read_bytes_total: u64,
+    /// Previous cumulative write-byte count.
+    pub previous_write_bytes_total: u64,
+    /// Latest read rate in operations per second.
+    pub read_iops: u64,
+    /// Latest write rate in operations per second.
+    pub write_iops: u64,
+    /// Latest other-operation rate per second.
+    pub other_iops: u64,
+    /// Latest read bandwidth in bytes per second.
+    pub read_bytes_per_second: u64,
+    /// Latest write bandwidth in bytes per second.
+    pub write_bytes_per_second: u64,
 }
 
 impl InstanceStatus {
@@ -310,6 +408,11 @@ pub struct ThreadPoolSnapshot {
     pub vcpu_count: u32,
     /// Performance counters captured with the current worker count.
     pub perf: Option<InstancePerfSample>,
+    /// Backend-computed per-thread CPU utilisation.
+    ///
+    /// `None` asks the controller to sample the backend process through
+    /// `/proc` using [`Instance::thread_name_filter`].
+    pub per_thread_util: Option<f64>,
 }
 
 /// Read cumulative CPU time across matching `/proc/<pid>/task/*/stat` files.
@@ -390,6 +493,7 @@ mod tests {
                 // FIXME these weren't required, looked like broken due to rebase
                 perf: None,
                 vcpu_count: 1,
+                per_thread_util: None,
             })
         }
 
