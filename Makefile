@@ -20,7 +20,7 @@ CARGO_FMT_FLAGS = --config wrap_comments=true
 CARGO_FMT = cargo fmt -- $(CARGO_FMT_FLAGS)
 CARGO_CLIPPY = cargo clippy --tests --locked
 CARGO_CLIPPY_FLAGS = --all-features --all-targets -- \
-	-D warnings -D clippy::use_self
+	-D warnings -D clippy::use_self -W dead_code
 CARGO_BUILD = cargo build --locked
 
 .PHONY: check
