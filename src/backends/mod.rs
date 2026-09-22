@@ -10,40 +10,143 @@
 //! carries an [`crate::instance::InstanceClient`] for operations on exactly
 //! one VM; the record itself is deliberately not another backend trait.
 
-//! Errors shared by per-VM backend clients.
+//! Types shared by per-VM backend clients.
 
+use std::io::{Error as IoError, ErrorKind};
+
+use procfs::ProcError;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use thiserror::Error;
+
+use crate::{
+    config::{Config, ConfigError},
+    instance::{Instance, InstanceClient, InstanceError},
+    util::Path,
+};
+
+/// One virtio-scsi IOThread-to-virtqueue mapping.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VqMapping {
+    /// IOThread object identifier.
+    pub iothread: String,
+    /// Virtqueue indices assigned to this IOThread.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vqs: Vec<u16>,
+}
+
+/// Optional properties used when creating a named IOThread.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IoThreadProperties {
+    /// Maximum polling window per iteration, in nanoseconds.
+    #[serde(rename = "poll-max-ns", skip_serializing_if = "Option::is_none")]
+    pub poll_max_ns: Option<i64>,
+    /// Poll-window growth step.
+    #[serde(rename = "poll-grow", skip_serializing_if = "Option::is_none")]
+    pub poll_grow: Option<i64>,
+    /// Poll-window shrink step.
+    #[serde(rename = "poll-shrink", skip_serializing_if = "Option::is_none")]
+    pub poll_shrink: Option<i64>,
+    /// Maximum AIO completion batch.
+    #[serde(rename = "aio-max-batch", skip_serializing_if = "Option::is_none")]
+    pub aio_max_batch: Option<i64>,
+    /// Minimum AIO worker-pool size.
+    #[serde(rename = "thread-pool-min", skip_serializing_if = "Option::is_none")]
+    pub thread_pool_min: Option<i64>,
+    /// Maximum AIO worker-pool size.
+    #[serde(rename = "thread-pool-max", skip_serializing_if = "Option::is_none")]
+    pub thread_pool_max: Option<i64>,
+}
 
 /// Failure returned by a backend client operation.
 #[derive(Debug, Error)]
 pub enum BackendClientError {
+    #[error(transparent)]
+    Clap(#[from] clap::Error),
+
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+
+    #[error(transparent)]
+    Instance(#[from] InstanceError),
+
     /// The backend deliberately does not implement this operation.
     #[error("operation not supported on this backend: {0}")]
     NotSupported(String),
     /// The transport disconnected while serving the request.
     #[error("disconnected: {0}")]
     Disconnected(String),
+
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
+
     /// Any other transport or framing failure.
     #[error("transport: {0}")]
     Transport(String),
+    /// A structured QMP error response.
+    #[error("qmp {cmd} error: {class}: {desc}")]
+    QmpError {
+        /// QMP command that failed.
+        cmd: String,
+        /// QMP error class.
+        class: String,
+        /// Human-readable error description.
+        desc: String,
+    },
     /// Protocol or framing error (payload limits, UTF-8, refusals, parse text).
     #[error("{0}")]
     Protocol(String),
     /// Incomplete or inconsistent backend or host process state.
     #[error("{0}")]
     InvalidState(String),
+    #[error("proc error")]
+    Procfs(#[from] ProcError),
+
+    #[error(transparent)]
+    Zbus(#[from] zbus::Error),
+}
+
+impl BackendClientError {
+    /// Classify transport I/O while retaining operation context.
+    pub fn from_transport_io(context: &str, error: &IoError) -> Self {
+        let message = format!("{context}: {error}");
+        if is_peer_disconnect_kind(error.kind()) {
+            Self::Disconnected(message)
+        } else {
+            Self::Transport(message)
+        }
+    }
+}
+
+impl From<IoError> for BackendClientError {
+    fn from(error: IoError) -> Self {
+        if is_peer_disconnect_kind(error.kind()) {
+            Self::Disconnected(error.to_string())
+        } else {
+            Self::Transport(error.to_string())
+        }
+    }
+}
+
+/// Return whether an I/O failure represents normal peer teardown.
+fn is_peer_disconnect_kind(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::NotFound
+    )
 }
 
 use std::{io, sync::Arc};
 
+#[cfg(feature = "qemu-backend")]
+pub mod qemu;
+
 use async_trait::async_trait;
 use linkme::distributed_slice;
-
-use crate::{
-    config::Config,
-    instance::{Instance, InstanceClient},
-    util::Path,
-};
 
 /// One in-tree (or out-of-tree) backend factory registered on [`BACKENDS`].
 pub struct BackendRegistration {
@@ -73,6 +176,25 @@ pub trait Backend: Send + Sync {
     /// any event only as a prompt to run a complete discovery pass.
     fn watch_paths(&self) -> Vec<Path> {
         Vec::new()
+    }
+
+    /// Optional backend-specific command-line interface. This allows passing
+    /// arguments specific to the backend from main.
+    fn cli_subcommand(&self) -> Option<clap::Command> {
+        None
+    }
+
+    //  This allows passing arguments specific to the backend from main.
+    async fn run_cli(&self, _matches: &clap::ArgMatches) -> Result<(), BackendClientError> {
+        Err(BackendClientError::NotSupported(format!(
+            "backend `{}` has no command-line interface",
+            self.name()
+        )))
+    }
+
+    /// Return the backend's effective configuration.
+    fn dump_config(&self) -> serde_json::Value {
+        serde_json::Value::Null
     }
 }
 
