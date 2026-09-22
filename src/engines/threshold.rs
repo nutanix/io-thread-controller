@@ -506,6 +506,7 @@ mod tests {
                 thread_count: 1,
                 vcpu_count: 8,
                 perf: None,
+                per_thread_util: Some(0.0),
             })
         }
 

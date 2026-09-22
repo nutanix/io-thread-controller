@@ -46,6 +46,10 @@ struct Cli {
     /// `tracing_subscriber` filter directive.
     #[arg(long, env = "RUST_LOG", default_value = "info")]
     log_level: String,
+
+    /// Emit a one-time legend for uptime-style status fields.
+    #[arg(long)]
+    print_status_header: bool,
 }
 
 #[tokio::main]
@@ -59,6 +63,11 @@ async fn main() -> Result<(), IoThreadControllerError> {
     }
 
     let cfg = load_daemon_config(&cli.config)?;
+
+    let mut cfg = load_daemon_config(&cli.config)?;
+    if cli.print_status_header {
+        cfg.print_status_header = true;
+    }
     validate_config(&cfg)?;
     let backends = registered_backends(&cfg)?;
     run(cfg, backends).await?;

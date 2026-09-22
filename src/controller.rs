@@ -20,7 +20,8 @@ use crate::{
     config::Config,
     dbus::DbusRequest,
     engines::{AppliedOutcome, BlockedReason, EngineTickContext, ScaleAction, ScalingEngine},
-    instance::Instance,
+    instance::{Instance, InstanceStatus},
+    rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
 };
 
@@ -41,6 +42,14 @@ pub enum ControllerError {
     #[error("VM error: {0}")]
     VmError(String),
 }
+
+/// Construct a [`Duration`] from whole minutes.
+const fn from_mins(minutes: u64) -> Duration {
+    Duration::from_secs(minutes * 60)
+}
+
+/// Rolling windows displayed in uptime-style status fields.
+const STATUS_WINDOWS: [Duration; 3] = [from_mins(1), from_mins(5), from_mins(15)];
 
 /// Host-wide cumulative CPU counters from `/proc/stat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -435,56 +444,69 @@ impl Controller {
     /// Emit configured per-VM and aggregate status lines.
     async fn emit_status_lines(&self) {
         let mut total_threads = 0u64;
-        let mut total_read_count = 0u64;
-        let mut total_write_count = 0u64;
+        let mut aggregate_iops = [0u64; 3];
+        let mut aggregate_has_iops = [false; 3];
         let mut fleet: Vec<_> = self.instances.values().collect();
         fleet.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         for instance in fleet {
             let status = instance.status.read().await;
-            let (
-                read_io_count,
-                write_io_count,
-                other_io_count,
-                read_bytes_total,
-                write_bytes_total,
-            ) = match status.perf {
-                Some(perf) => (
-                    perf.read_io_count,
-                    perf.write_io_count,
-                    perf.other_io_count,
-                    perf.read_bytes_total,
-                    perf.write_bytes_total,
-                ),
-                None => (0, 0, 0, 0, 0),
-            };
+            let iops_windows = STATUS_WINDOWS.map(|window| status.rolling.iops_over(window));
+            for (index, value) in iops_windows.iter().enumerate() {
+                if let Some(value) = value {
+                    aggregate_iops[index] = aggregate_iops[index].saturating_add(*value);
+                    aggregate_has_iops[index] = true;
+                }
+            }
             if self.cfg.enable_per_vm_status_line {
-                tracing::info!(
-                    target: "status",
-                    vm = instance.to_string(),
-                    thr = status.thread_count,
-                    read_count = read_io_count,
-                    write_count = write_io_count,
-                    other_count = other_io_count,
-                    read_bytes = read_bytes_total,
-                    write_bytes = write_bytes_total,
-                    ""
-                );
+                Self::emit_instance_status(instance, &status, iops_windows);
             }
             total_threads += u64::from(status.thread_count);
-            total_read_count += read_io_count;
-            total_write_count += write_io_count;
         }
 
         if self.cfg.enable_aggregate_status_line {
+            let aggregate =
+                std::array::from_fn(|idx| aggregate_has_iops[idx].then_some(aggregate_iops[idx]));
             tracing::info!(
                 target: "status",
                 tracked = self.instances.len(),
                 total_threads,
-                total_read_count,
-                total_write_count,
+                iops_1_5_15m = %format_optional_cells(aggregate),
                 "aggregate"
             );
         }
+    }
+
+    /// Emit one uptime-style per-VM status record.
+    fn emit_instance_status(
+        instance: &Instance,
+        status: &InstanceStatus,
+        iops_windows: [Option<u64>; 3],
+    ) {
+        let cpu_average = status.per_thread_util.clamp(0.0, 1.0) * 100.0;
+        let cpu_total = cpu_average * f64::from(status.thread_count);
+        tracing::info!(
+            target: "status",
+            vm = instance.to_string(),
+            thr = status.thread_count,
+            iops = %format!(
+                "{}/{}/{}",
+                status.read_iops,
+                status.write_iops,
+                status.other_iops
+            ),
+            iops_1_5_15m = %format_optional_cells(iops_windows),
+            bw_mb_s = %format!(
+                "{}/{}",
+                status.read_bytes_per_second / 1_000_000,
+                status.write_bytes_per_second / 1_000_000
+            ),
+            cpu = %format!("{cpu_average:.0}/{cpu_total:.0}"),
+            cpu_us_per_io_1_5_15m =
+                %format_1_5_15(&status.rolling, |rolling, window| {
+                    rolling.cpu_us_per_io_over(window)
+                }),
+            ""
+        );
     }
 }
 
@@ -518,6 +540,19 @@ fn host_cpu_utilisation(previous: HostCpuSample, current: HostCpuSample) -> f64 
     } else {
         (delta_busy / delta_total).clamp(0.0, 1.0)
     }
+}
+
+/// Render the 1m/5m/15m cells, using `-` before a window has data.
+fn format_optional_cells(values: [Option<u64>; 3]) -> String {
+    values
+        .into_iter()
+        .map(|value| {
+            value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
@@ -557,6 +592,7 @@ mod tests {
                 thread_count: self.target.load(Ordering::Relaxed),
                 vcpu_count: 4,
                 perf: None,
+                per_thread_util: None,
             })
         }
 
@@ -719,9 +755,10 @@ mod tests {
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
                 thread_count: self.threads,
-                // FIXME this wasn't required, looked like broken due to rebase
+                // FIXME these weren't required, looked like broken due to rebase
                 vcpu_count: 2,
                 perf: None,
+                per_thread_util: None,
             })
         }
 
