@@ -7,6 +7,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fs::{OpenOptions, create_dir_all},
+    io::Write,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -27,6 +29,7 @@ use crate::{
     instance::{CgroupError, Instance, InstanceStatus},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
+    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -173,6 +176,7 @@ const fn from_mins(minutes: u64) -> Duration {
 
 /// Rolling windows displayed in uptime-style status fields.
 const STATUS_WINDOWS: [Duration; 3] = [from_mins(1), from_mins(5), from_mins(15)];
+const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";
 
 /// Host-wide cumulative CPU counters from `/proc/stat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -201,6 +205,10 @@ pub struct Controller {
     /// and decide.
     // FIXME Instance probably doesn't need to be an Arc.
     pub instances: HashMap<String, Arc<Instance>>,
+    /// Per-VM log file destination when per-VM main log is disabled.
+    per_vm_log_dir: Path,
+    /// VM IDs for which per-VM log I/O failures were already reported.
+    per_vm_log_io_error_warned: std::sync::Mutex<HashSet<String>>,
     /// Monotonically increasing tick sequence.
     pub tick_index: u64,
     /// Previous host CPU sample.
@@ -222,6 +230,8 @@ impl Controller {
             vm_state_store,
             vm_ownership,
             instances: HashMap::new(),
+            per_vm_log_dir: Path::from(PER_VM_LOG_DIR),
+            per_vm_log_io_error_warned: std::sync::Mutex::new(HashSet::new()),
             tick_index: 0,
             last_host_cpu: None,
             host_cpu_util: 0.0,
@@ -638,6 +648,12 @@ impl Controller {
         if sticky {
             self.report_blocked_scale(&instance.id, action, BlockedReason::ManualOverride)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!("event=scale_blocked reason=manual_override action={action}"),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -651,6 +667,12 @@ impl Controller {
             // FIXME why would an engine even consider an unmanaged VM?
             self.report_blocked_scale(&instance.id, action, BlockedReason::UnmanagedVm)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!("event=scale_blocked reason=unmanaged_vm action={action}"),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -663,6 +685,15 @@ impl Controller {
         if target < self.cfg.min_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetBelowMinimum)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_below_minimum action={action} target={} minimum={}",
+                        target, self.cfg.min_thread_count
+                    ),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -675,6 +706,15 @@ impl Controller {
         if target > self.cfg.max_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsMaximum)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_exceeds_maximum action={action} target={} maximum={}",
+                        target, self.cfg.max_thread_count
+                    ),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -687,6 +727,15 @@ impl Controller {
         if target > vcpu_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsVcpuCount)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_exceeds_vcpu_count action={action} target={} vcpus={}",
+                        target, vcpu_count
+                    ),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -701,6 +750,12 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::Cooldown)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!("event=scale_blocked reason=cooldown action={action}"),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -718,6 +773,15 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::HostCpuCeiling)
                 .await;
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=host_cpu_ceiling action={action} host_cpu={} ceiling={}",
+                        self.host_cpu_util, self.cfg.host_cpu_scale_up_ceiling
+                    ),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -729,6 +793,12 @@ impl Controller {
         }
 
         if self.cfg.dry_run {
+            if self.should_log_per_vm_file() {
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!("event=scale_dry_run action={action} target={target}"),
+                );
+            }
             tracing::info!(
                 target: "controller",
                 vm = %instance.id,
@@ -781,6 +851,15 @@ impl Controller {
                     prev_thread_count = previous_count,
                     prev_io_count_total = previous_io_count
                 );
+                if self.should_log_per_vm_file() {
+                    self.log_per_vm_line(
+                        &instance.id,
+                        &format!(
+                            "event=scale_applied action={action} target={} prev_thread_count={} prev_io_count_total={}",
+                            target, previous_count, previous_io_count
+                        ),
+                    );
+                }
                 Ok(true)
             }
             Err(error) => {
@@ -796,6 +875,15 @@ impl Controller {
                     target,
                     error = %error_text
                 );
+                if self.should_log_per_vm_file() {
+                    self.log_per_vm_line(
+                        &instance.id,
+                        &format!(
+                            "event=scale_failed action={action} target={} error={}",
+                            target, error_text
+                        ),
+                    );
+                }
                 Ok(false)
             }
         }
@@ -829,8 +917,13 @@ impl Controller {
                     aggregate_has_iops[index] = true;
                 }
             }
-            if self.cfg.enable_per_vm_status_line {
-                Self::emit_instance_status(instance, &status, iops_windows);
+            if self.cfg.enable_per_vm_status_line && self.cfg.enable_per_vm_main_log {
+                Self::emit_instance_status_main(instance, &status, iops_windows);
+            } else if self.cfg.enable_per_vm_status_line {
+                self.emit_instance_status_file(instance, &status, iops_windows);
+            }
+            if self.cfg.enable_per_vm_main_log {
+                Self::emit_instance_status_main(instance, &status, iops_windows);
             }
             total_threads += u64::from(status.thread_count);
         }
@@ -848,36 +941,139 @@ impl Controller {
         }
     }
 
-    /// Emit one uptime-style per-VM status record.
-    fn emit_instance_status(
+    fn format_instance_status_line(
+        instance: &Instance,
+        status: &InstanceStatus,
+        iops_windows: [Option<u64>; 3],
+    ) -> String {
+        let cpu = compute_cpu_stats(status);
+        format!(
+            "event=vm_status vm={} thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
+            instance,
+            status.thread_count,
+            status.read_iops,
+            status.write_iops,
+            status.other_iops,
+            format_optional_cells(iops_windows),
+            status.read_bytes_per_second / 1_000_000,
+            status.write_bytes_per_second / 1_000_000,
+            cpu.avg_pct,
+            cpu.median_pct,
+            cpu.total_pct,
+            format_latency_cell(status.read_latency_us),
+            format_latency_cell(status.write_latency_us),
+            format_1_5_15(&status.rolling, |rolling, window| rolling
+                .cpu_us_per_io_over(window)),
+        )
+    }
+
+    fn emit_instance_status_file(
+        &self,
         instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) {
-        let cpu = compute_cpu_stats(status);
-        tracing::info!(
-            target: "status",
-            vm = instance.to_string(),
-            thr = status.thread_count,
-            iops = %format!(
-                "{}/{}/{}",
-                status.read_iops,
-                status.write_iops,
-                status.other_iops
-            ),
-            iops_1_5_15m = %format_optional_cells(iops_windows),
-            bw_mb_s = %format!(
-                "{}/{}",
-                status.read_bytes_per_second / 1_000_000,
-                status.write_bytes_per_second / 1_000_000
-            ),
-            cpu = %format!("{}/{}/{}", cpu.avg_pct, cpu.median_pct, cpu.total_pct),
-            cpu_us_per_io_1_5_15m =
-                %format_1_5_15(&status.rolling, |rolling, window| {
-                    rolling.cpu_us_per_io_over(window)
-                }),
-            ""
+        self.log_per_vm_line(
+            &instance.id,
+            &Self::format_instance_status_line(instance, status, iops_windows),
         );
+    }
+
+    /// Emit one per-VM status record on the main controller target.
+    fn emit_instance_status_main(
+        instance: &Instance,
+        status: &InstanceStatus,
+        iops_windows: [Option<u64>; 3],
+    ) {
+        tracing::info!(
+            target: "controller",
+            event = "vm_status",
+            vm = instance.to_string(),
+            thread_count = status.thread_count,
+            read_iops = status.read_iops,
+            write_iops = status.write_iops,
+            other_iops = status.other_iops,
+            iops_1_5_15m = %format_optional_cells(iops_windows),
+            read_bw_mb_s = status.read_bytes_per_second / 1_000_000,
+            write_bw_mb_s = status.write_bytes_per_second / 1_000_000,
+            read_latency_us = %format_latency_cell(status.read_latency_us),
+            write_latency_us = %format_latency_cell(status.write_latency_us)
+        );
+    }
+
+    fn should_log_per_vm_file(&self) -> bool {
+        self.cfg.enable_per_vm_status_line && !self.cfg.enable_per_vm_main_log
+    }
+
+    fn per_vm_log_path(&self, vm: &str) -> Path {
+        let name: String = vm
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        Path::new(&self.per_vm_log_dir.join(format!("{name}.log")))
+    }
+
+    fn log_per_vm_line(&self, vm: &str, line: &str) {
+        let path = self.per_vm_log_path(vm);
+        let path_text = path.display().to_string();
+        if let Some(parent) = path.parent()
+            && let Err(error) = create_dir_all(parent)
+        {
+            let mut warned = self
+                .per_vm_log_io_error_warned
+                .lock()
+                .expect("lock poisoned");
+            if warned.insert(vm.to_string()) {
+                tracing::warn!(
+                    target: "controller",
+                    vm,
+                    path = %path_text,
+                    %error,
+                    "failed to create per-VM log directory"
+                );
+            }
+            return;
+        }
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = writeln!(file, "{line}") {
+                    let mut warned = self
+                        .per_vm_log_io_error_warned
+                        .lock()
+                        .expect("lock poisoned");
+                    if warned.insert(vm.to_string()) {
+                        tracing::warn!(
+                            target: "controller",
+                            vm,
+                            path = %path_text,
+                            %error,
+                            "failed to write per-VM log"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                let mut warned = self
+                    .per_vm_log_io_error_warned
+                    .lock()
+                    .expect("lock poisoned");
+                if warned.insert(vm.to_string()) {
+                    tracing::warn!(
+                        target: "controller",
+                        vm,
+                        path = %path_text,
+                        %error,
+                        "failed to open per-VM log"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -941,6 +1137,17 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn format_latency_cell(latency: Option<crate::instance::LatencySummary>) -> String {
+    latency
+        .map(|latency| {
+            format!(
+                "{}/{}/{}/{}",
+                latency.p50, latency.p95, latency.p99, latency.avg
+            )
+        })
+        .unwrap_or_else(|| "-".to_string())
 }
 
 #[cfg(test)]
