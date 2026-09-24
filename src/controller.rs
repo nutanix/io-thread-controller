@@ -169,6 +169,27 @@ pub enum ControllerError {
     VmError(String),
 }
 
+/// Return queue count, total, fixed-point average, and median depth.
+fn summarize_vq_depths(
+    depths: Option<&[u64]>,
+) -> (Option<u32>, Option<u64>, Option<u64>, Option<u64>) {
+    let Some(depths) = depths.filter(|depths| !depths.is_empty()) else {
+        return (None, None, None, None);
+    };
+    let count = depths.len() as u32;
+    let total = depths.iter().copied().fold(0u64, u64::saturating_add);
+    let average_x100 = ((u128::from(total) * 100) / depths.len() as u128) as u64;
+    let median = median(
+        &depths
+            .iter()
+            .copied()
+            .map(|depth| depth as f64)
+            .collect::<Vec<_>>(),
+    )
+    .floor() as u64;
+    (Some(count), Some(total), Some(average_x100), Some(median))
+}
+
 /// Construct a [`Duration`] from whole minutes.
 const fn from_mins(minutes: u64) -> Duration {
     Duration::from_secs(minutes * 60)
@@ -481,6 +502,8 @@ impl Controller {
             let instance = &self.instances[id];
             let s = instance.status.read().await;
             let cpu_stats = compute_cpu_stats(&s);
+            let (num_queues, derived_qd_total, qd_avg_x100, qd_median) =
+                summarize_vq_depths(s.per_vq_depth.as_deref());
             payload.vms.push(SnapshotVm {
                 id: id.clone(),
                 vcpu_count: s.vcpu_count,
@@ -512,11 +535,11 @@ impl Controller {
                     p99: latency.p99,
                     avg: latency.avg,
                 }),
-                num_queues: None,
-                per_vq_depth: None,
-                qd_total: None,
-                qd_avg_x100: None,
-                qd_median: None,
+                num_queues,
+                per_vq_depth: s.per_vq_depth.clone(),
+                qd_total: s.vq_depth_total.or(derived_qd_total),
+                qd_avg_x100,
+                qd_median,
                 cpu_pct_avg: Some(cpu_stats.avg_pct),
                 cpu_pct_median: Some(cpu_stats.median_pct),
                 cpu_pct_total: Some(cpu_stats.total_pct),
