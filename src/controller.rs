@@ -500,10 +500,19 @@ impl Controller {
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         self.persist_new_classifications(&fleet).await?;
         let plan = self.engine.evaluate_fleet(&fleet, &context).await;
+        let cap = self.cfg.max_instances_adjusted_per_poll as usize;
+        let mut adjusted = 0usize;
         for item in plan {
             let action = item.decision;
-            self.apply_engine_decision(&item.instance_id, action)
-                .await?;
+            if cap > 0 && adjusted >= cap {
+                continue;
+            }
+            if self
+                .apply_engine_decision(&item.instance_id, action)
+                .await?
+            {
+                adjusted += 1;
+            }
         }
         self.emit_status_lines().await;
         Ok(())
@@ -547,12 +556,12 @@ impl Controller {
         &self,
         instance_id: &str,
         action: ScaleAction,
-    ) -> Result<(), ControllerError> {
+    ) -> Result<bool, ControllerError> {
         let Some(target) = action.target() else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(instance) = self.instances.get(instance_id) else {
-            return Ok(());
+            return Ok(false);
         };
 
         let status = instance.status.read().await;
@@ -577,7 +586,7 @@ impl Controller {
                 vm = %instance.id,
                 action = %action
             );
-            return Ok(());
+            return Ok(false);
         }
         if !scaling_allowed {
             // FIXME why would an engine even consider an unmanaged VM?
@@ -590,7 +599,7 @@ impl Controller {
                 vm = %instance.id,
                 action = %action
             );
-            return Ok(());
+            return Ok(false);
         }
         if target < self.cfg.min_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetBelowMinimum)
@@ -602,7 +611,7 @@ impl Controller {
                 minimum = self.cfg.min_thread_count,
                 "automatic scaling suppressed by controller minimum"
             );
-            return Ok(());
+            return Ok(false);
         }
         if target > self.cfg.max_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsMaximum)
@@ -614,7 +623,7 @@ impl Controller {
                 maximum = self.cfg.max_thread_count,
                 "automatic scaling suppressed by controller maximum"
             );
-            return Ok(());
+            return Ok(false);
         }
         if target > vcpu_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsVcpuCount)
@@ -626,7 +635,7 @@ impl Controller {
                 vcpus = vcpu_count,
                 "automatic scaling suppressed by vCPU cap"
             );
-            return Ok(());
+            return Ok(false);
         }
         if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_))
             && cooldown_until.is_some_and(|until| Instant::now() < until)
@@ -638,7 +647,7 @@ impl Controller {
                 id = %instance.id,
                 "automatic scaling suppressed by cooldown"
             );
-            return Ok(());
+            return Ok(false);
         }
         // FIXME This condition allows ScaleAction::Down(...) with an increasing target
         // to bypass the ceiling. This check should be removed or Down(...) should be
@@ -657,7 +666,7 @@ impl Controller {
                 ceiling = self.cfg.host_cpu_scale_up_ceiling,
                 "automatic scaling suppressed by host CPU guard"
             );
-            return Ok(());
+            return Ok(false);
         }
 
         if self.cfg.dry_run {
@@ -682,7 +691,7 @@ impl Controller {
                     },
                 )
                 .await;
-            return Ok(());
+            return Ok(true);
         }
 
         match instance.client.set_thread_count(target).await {
@@ -713,6 +722,7 @@ impl Controller {
                     prev_thread_count = previous_count,
                     prev_io_count_total = previous_io_count
                 );
+                Ok(true)
             }
             Err(error) => {
                 let error_text = error.to_string();
@@ -727,9 +737,9 @@ impl Controller {
                     target,
                     error = %error_text
                 );
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     /// Report a controller-blocked action to the proposing engine.
