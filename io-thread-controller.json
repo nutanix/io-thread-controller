@@ -11,5 +11,6 @@
   "backend_config_dir": "/etc/io-thread-controller.d/backends",
   "vm_state_path": "/run/io-thread-controller/vm-ownership.json",
   "dry_run": false,
-  "max_instances_adjusted_per_poll": 0
+  "max_instances_adjusted_per_poll": 0,
+  "experimental_psi_monitoring": false
 }
