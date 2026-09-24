@@ -10,7 +10,12 @@
 //! A [`crate::backends::Backend`] is the fleet-level adapter that owns
 //! backend-wide configuration and discovers zero or more such records.
 
-use std::{collections::HashMap, fmt, sync::LazyLock, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::LazyLock,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use procfs::process::Process;
@@ -326,25 +331,31 @@ impl fmt::Display for Instance {
 #[derive(Debug, Default, Clone)]
 pub struct ThreadNameFilter {
     match_regex: Option<Regex>,
+    ignored_names: HashSet<String>,
 }
 
 impl ThreadNameFilter {
-    /// Compile task-name patterns. An empty list includes every task.
-    pub fn new(pattern: &str) -> Result<Self, InstanceError> {
+    /// Compile match patterns and collect exact names to ignore.
+    pub fn new(pattern: &str, ignored_names: &[String]) -> Result<Self, InstanceError> {
         let match_regex = if pattern.is_empty() {
             None
         } else {
             let pattern = format!("(?:{pattern})");
             Some(Regex::new(&pattern)?)
         };
-        Ok(Self { match_regex })
+        Ok(Self {
+            match_regex,
+            ignored_names: ignored_names.iter().cloned().collect(),
+        })
     }
 
     /// Return whether a task name belongs in CPU sampling.
     pub fn matches(&self, task_name: &str) -> bool {
-        self.match_regex
-            .as_ref()
-            .is_none_or(|regex| regex.is_match(task_name))
+        !self.ignored_names.contains(task_name)
+            && (self
+                .match_regex
+                .as_ref()
+                .is_some_and(|regex| regex.is_match(task_name)))
     }
 }
 
@@ -716,6 +727,27 @@ mod tests {
     }
 
     use super::{TaskCpuSample, compute_per_worker_util};
+
+    use super::ThreadNameFilter;
+
+    /// Test that an empty match list includes every task not on the
+    /// ignore list.
+    #[test]
+    fn empty_match_list_includes_nonignored_tasks() {
+        let filter = ThreadNameFilter::new("worker", &["helper".to_string()]).unwrap();
+        assert!(filter.matches("worker"));
+        assert!(!filter.matches("helper"));
+    }
+
+    /// Test that exact `IgnoreThreadNames` wins over a matching regex
+    /// allowlist.
+    #[test]
+    fn exact_ignore_takes_precedence_over_regex_match() {
+        let filter = ThreadNameFilter::new("worker[0-9]+", &["worker0".to_string()]).unwrap();
+        assert!(!filter.matches("worker0"));
+        assert!(filter.matches("worker1-helper"));
+        assert!(!filter.matches("backend-main"));
+    }
 
     fn task(tid: i32, name: &str, cpu_ticks: u64) -> TaskCpuSample {
         TaskCpuSample {
