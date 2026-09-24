@@ -225,10 +225,12 @@ The daemon owns:
 - object path: `/com/nutanix/io_thread_controller1`
 - interface: `com.nutanix.io_thread_controller1`
 
-Debug builds expose `SetThreadCount(vm, threads, sticky)` to change a tracked
-instance's thread count. Setting `sticky=true` suppresses automatic scaling for
-that instance until a later call clears it. This debug-only override is kept in
-memory and is lost when the daemon restarts.
+Debug builds expose `SetThreadCount(vm, threads, sticky)` and
+`SetAllThreadCounts(threads, sticky)`. The latter attempts every VM in the
+daemon inventory and reports partial failures without undoing successful
+updates. Setting `sticky=true` suppresses automatic scaling for each successful
+VM until a later debug call clears it. The override is kept in memory and is
+lost when the daemon restarts.
 
 `GetStats()` returns a JSON fleet snapshot. For example:
 
@@ -423,17 +425,19 @@ it never sees a backend directly.
 | `Esc`                   | Clear focus (repaint every vm)                        |
 | `+`, `=`                | Ask the daemon to add one thread to the focused vm     |
 | `-`, `_`                | Ask the daemon to remove one thread from the focused vm |
+| `A`                     | Set every VM in the daemon inventory to an exact count |
 | `s`                     | Toggle sticky mode for `+` / `-` (title bar shows `[STICKY]`) |
 
-**`+` / `-` always route through the daemon.**  Both
+**`+` / `-` / `A` always route through the daemon.**  Both
 per-frame stats (via `GetSnapshot`) and manual actuations
-(via `SetThreadCount(vm, threads, sticky)`) go over
+(via `SetThreadCount` or `SetAllThreadCounts`) go over
 `com.nutanix.io_thread_controller1` on
 `/com/nutanix/io_thread_controller1`, so the daemon is the
-single source of truth for `manual_scaling_sticky`.  A wire
-error on either verb logs at WARN on the `iothread-tui`
-tracing target (and shows up in the daemon journal too) but
-otherwise leaves the UI running so the operator can retry.
+single source of truth for `manual_scaling_sticky`. `A` targets the complete
+daemon inventory, including VMs hidden by `--select`. A wire error on either
+verb logs at WARN on the `iothread-tui` tracing target (and shows up in the
+daemon journal too) but otherwise leaves the UI running so the operator can
+retry.
 There is no direct-backend fallback path — a missing daemon
 is a fatal condition the binary refuses to start with.
 
