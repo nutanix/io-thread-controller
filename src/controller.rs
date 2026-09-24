@@ -24,7 +24,7 @@ use crate::{
     engines::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
-    instance::{Instance, InstanceStatus},
+    instance::{CgroupError, Instance, InstanceStatus},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
 };
@@ -146,6 +146,12 @@ fn compute_cpu_stats(s: &crate::instance::InstanceStatus) -> CpuStats {
 pub enum ControllerError {
     #[error(transparent)]
     BackendClient(#[from] BackendClientError),
+
+    #[error(transparent)]
+    Cgroup(#[from] CgroupError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 
     #[error(transparent)]
     Proc(#[from] ProcError),
@@ -492,7 +498,13 @@ impl Controller {
             tick_index: self.tick_index,
         };
         let fleet: Vec<_> = self.instances.values().cloned().collect();
-        let refreshes = join_all(fleet.iter().map(|instance| instance.refresh_state())).await;
+        let refresh_cgroup = self.cfg.refresh_cgroup_on_each_read;
+        let refreshes = join_all(
+            fleet
+                .iter()
+                .map(|instance| instance.refresh_state(refresh_cgroup)),
+        )
+        .await;
 
         for id in fleet
             .iter()
