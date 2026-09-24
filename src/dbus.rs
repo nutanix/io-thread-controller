@@ -10,7 +10,8 @@
 //! target VM and dispatches through its [`crate::instance::InstanceClient`].
 //!
 //! Verbs currently exposed:
-//!   * debug-only `SetThreadCount(vm, threads, sticky)`;
+//!   * debug-only `SetThreadCount(vm, threads, sticky)` and
+//!     `SetAllThreadCounts(threads, sticky)`;
 //!   * read-only `GetStats()`;
 //!   * read-only `GetVersion()`;
 //!   * named-IOThread and virtqueue-mapping operations for clients that support
@@ -49,14 +50,28 @@ pub enum DbusRequest {
         /// One-shot channel used to complete the D-Bus method call.
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// Structured snapshot of every tracked instance. The reply is a JSON
-    /// string so the wire signature stays a bare `s` and the payload shape can
-    /// evolve without D-Bus IDL churn.  Field contract is documented on
+    /// Operator-driven fleet-wide thread-count update.
+    SetAllThreadCounts {
+        /// Target thread count for every currently tracked VM.
+        threads: u32,
+        /// Apply or clear the manual sticky override on every successful VM.
+        sticky: bool,
+        /// Reply is `(number of failures, human-readable summary)`.
+        reply: oneshot::Sender<(u32, String)>,
+    },
     /// JSON snapshot of all tracked VMs.
     GetStats {
         /// Reply channel carrying the serialized snapshot.
         reply: oneshot::Sender<String>,
     },
+    /// Structured snapshot of every tracked instance -- the
+    /// machine-readable sibling of `GetStats`.  Consumed by
+    /// `iothread-tui` (and any other operator UI) to render
+    /// live plots + dashboards without having to peek at
+    /// backend sockets directly.  The reply is a JSON string
+    /// so the wire signature stays a bare `s` and the payload
+    /// shape can evolve without D-Bus IDL churn.  Field
+    /// contract is documented on
     /// [`crate::controller::SnapshotPayload`].
     GetSnapshot {
         /// Reply channel; JSON-encoded
@@ -148,7 +163,11 @@ impl Service {
         vm: String,
         threads: u32,
         sticky: bool,
-    ) -> zbus::fdo::Result<()> {
+    ) -> zbus::fdo::Result<(u32, String)> {
+        let summary = format!(
+            "set thread count on VM {vm} to {threads}{}",
+            if sticky { " (sticky)" } else { "" }
+        );
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(DbusRequest::SetThreadCount {
@@ -160,9 +179,28 @@ impl Service {
             .await
             .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
         match await_with_timeout(rx).await? {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok((0, summary)),
             Err(e) => Err(zbus::fdo::Error::Failed(e)),
         }
+    }
+
+    /// Apply one exact worker count to every VM in the daemon inventory.
+    #[cfg(debug_assertions)]
+    async fn set_all_thread_counts(
+        &self,
+        threads: u32,
+        sticky: bool,
+    ) -> zbus::fdo::Result<(u32, String)> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(DbusRequest::SetAllThreadCounts {
+                threads,
+                sticky,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("controller channel closed".into()))?;
+        await_with_timeout(rx).await
     }
 
     /// Return the controller's machine-readable fleet snapshot.

@@ -286,6 +286,14 @@ impl Controller {
                     .map_err(|error| error.to_string());
                 let _ = reply.send(result);
             }
+            DbusRequest::SetAllThreadCounts {
+                threads,
+                sticky,
+                reply,
+            } => {
+                let result = self.handle_set_all_thread_counts(threads, sticky).await;
+                let _ = reply.send(result);
+            }
             DbusRequest::GetSnapshot { reply } => {
                 let _ = reply.send(self.handle_get_snapshot().await);
             }
@@ -421,6 +429,36 @@ impl Controller {
         status.thread_count = threads;
         status.manual_scaling_sticky = sticky;
         Ok(())
+    }
+
+    /// Apply a debug-only manual count to every VM known to the daemon.
+    ///
+    /// The daemon inventory, rather than the consumer's filtered view, defines
+    /// the target set. Every VM is attempted in stable identifier order so
+    /// one rejection does not hide successful updates to other VMs.
+    async fn handle_set_all_thread_counts(&self, threads: u32, sticky: bool) -> (u32, String) {
+        let mut ids: Vec<_> = self.instances.keys().cloned().collect();
+        ids.sort_unstable();
+        let attempted = ids.len();
+        let mut succeeded = 0usize;
+        let mut failures = Vec::new();
+        for id in ids {
+            match self.handle_set_thread_count(&id, threads, sticky).await {
+                Ok(()) => succeeded += 1,
+                Err(error) => failures.push(format!("{id}: {error}")),
+            }
+        }
+
+        let failed = failures.len();
+        let mut summary = format!(
+            "set thread count to {threads}{} on {succeeded}/{attempted} VMs",
+            if sticky { " (sticky)" } else { "" }
+        );
+        if !failures.is_empty() {
+            summary.push_str("; failures: ");
+            summary.push_str(&failures.join("; "));
+        }
+        (u32::try_from(failed).unwrap_or(u32::MAX), summary)
     }
 
     /// Assemble the machine-readable fleet snapshot.
@@ -1089,6 +1127,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(target.load(Ordering::Relaxed), 2);
+    }
+
+    struct BulkClient {
+        fail: bool,
+        target: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl InstanceClient for BulkClient {
+        async fn set_thread_count(&self, n: u32) -> Result<(), BackendClientError> {
+            if self.fail {
+                return Err(BackendClientError::Protocol("injected failure".to_string()));
+            }
+            self.target.store(n, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
+            Ok(ThreadPoolSnapshot {
+                thread_count: self.target.load(Ordering::Relaxed),
+                vcpu_count: 16,
+                perf: None,
+                per_thread_util: Some(0.0),
+            })
+        }
+
+        async fn close(&self) {}
+    }
+
+    /// Test that `set_all` applies a target to every VM and reports how
+    /// many failed when some clients error.
+    #[tokio::test]
+    async fn set_all_attempts_every_vm_and_reports_partial_failure() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            ..Default::default()
+        };
+        let engine = Box::new(ThresholdEngine::new(ThresholdConfig::default()));
+        let mut controller = Controller::new(cfg, engine).unwrap();
+        let good_target = Arc::new(AtomicU32::new(1));
+        let good = BulkClient {
+            fail: false,
+            target: Arc::clone(&good_target),
+        };
+        let bad_target = Arc::new(AtomicU32::new(1));
+        let bad = BulkClient {
+            fail: true,
+            target: Arc::clone(&bad_target),
+        };
+        let good_instance = Arc::new(Instance::new("visible".to_string(), Path::new(""), 0, good));
+        let bad_instance = Arc::new(Instance::new("hidden".to_string(), Path::new(""), 0, bad));
+        good_instance.status.write().await.vcpu_count = 16;
+        bad_instance.status.write().await.vcpu_count = 16;
+        controller
+            .instances
+            .insert("visible".to_string(), good_instance.clone());
+        controller
+            .instances
+            .insert("hidden".to_string(), bad_instance.clone());
+
+        let (failed, summary) = controller.handle_set_all_thread_counts(4, true).await;
+
+        assert_eq!(failed, 1);
+        assert_eq!(good_target.load(Ordering::Relaxed), 4);
+        assert_eq!(bad_target.load(Ordering::Relaxed), 1);
+        assert!(good_instance.status.read().await.manual_scaling_sticky);
+        assert!(!bad_instance.status.read().await.manual_scaling_sticky);
+        assert!(summary.contains("1/2"));
+        assert!(summary.contains("hidden: injected failure"));
     }
 
     struct SnapshotClient {
