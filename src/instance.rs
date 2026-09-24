@@ -219,7 +219,12 @@ impl Instance {
         Self::update_perf_rates(&mut status, &snapshot.perf, now);
         status.thread_count = snapshot.thread_count;
         status.vcpu_count = snapshot.vcpu_count;
-        status.perf = snapshot.perf;
+        status.perf = snapshot.perf.clone();
+        status.read_latency_us = snapshot.perf.as_ref().and_then(|perf| perf.read_latency_us);
+        status.write_latency_us = snapshot
+            .perf
+            .as_ref()
+            .and_then(|perf| perf.write_latency_us);
         status.alive = true;
         let backend_util = snapshot.per_thread_util.map(|util| util.clamp(0.0, 1.0));
         if let Some(backend_util) = backend_util {
@@ -395,6 +400,10 @@ pub struct InstanceStatus {
     pub write_iops: u64,
     /// Latest other-operation rate per second.
     pub other_iops: u64,
+    /// Latest read-latency histogram digest.
+    pub read_latency_us: Option<LatencySummary>,
+    /// Latest write-latency histogram digest.
+    pub write_latency_us: Option<LatencySummary>,
     /// Latest read bandwidth in bytes per second.
     pub read_bytes_per_second: u64,
     /// Latest write bandwidth in bytes per second.
@@ -431,8 +440,21 @@ pub struct TaskCpuSample {
     pub cpu_ticks: u64,
 }
 
+/// Backend-neutral latency histogram digest in microseconds.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct LatencySummary {
+    /// Median latency.
+    pub p50: u64,
+    /// 95th-percentile latency.
+    pub p95: u64,
+    /// 99th-percentile latency.
+    pub p99: u64,
+    /// Histogram-derived arithmetic mean.
+    pub avg: u64,
+}
+
 /// Backend-neutral performance counters from one snapshot.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct InstancePerfSample {
     /// Cumulative completed reads.
     pub read_io_count: u64,
@@ -444,6 +466,22 @@ pub struct InstancePerfSample {
     pub read_bytes_total: u64,
     /// Cumulative bytes written.
     pub write_bytes_total: u64,
+    /// Cumulative sequential-read operations.
+    pub read_seq_ops: u64,
+    /// Cumulative random-read operations.
+    pub read_rand_ops: u64,
+    /// Cumulative sequential-write operations.
+    pub write_seq_ops: u64,
+    /// Cumulative random-write operations.
+    pub write_rand_ops: u64,
+    /// Cumulative operations smaller than the backend's small-I/O cutoff.
+    pub small_ops: u64,
+    /// Cumulative operations at least as large as the backend's cutoff.
+    pub large_ops: u64,
+    /// Read-latency digest, when the backend has read samples.
+    pub read_latency_us: Option<LatencySummary>,
+    /// Write-latency digest, when the backend has write samples.
+    pub write_latency_us: Option<LatencySummary>,
 }
 
 impl InstancePerfSample {
