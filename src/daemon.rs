@@ -58,6 +58,23 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
         version = VERSION,
         "io-thread-controller starting"
     );
+    let per_vm_destination = if cfg.enable_per_vm_status_line {
+        if cfg.enable_per_vm_main_log {
+            "main log".to_string()
+        } else {
+            "/var/log/io-thread-controller/vms/<vm>.log".to_string()
+        }
+    } else {
+        "disabled".to_string()
+    };
+    tracing::info!(
+        target: "controller",
+        per_vm_status_line = cfg.enable_per_vm_status_line,
+        per_vm_main_log = cfg.enable_per_vm_main_log,
+        per_vm_destination = %per_vm_destination,
+        "per-VM logging configuration"
+    );
+
     if cfg.print_status_header {
         tracing::info!(
             target: "status",
