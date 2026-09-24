@@ -568,18 +568,46 @@ impl Controller {
 
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         self.persist_new_classifications(&fleet).await?;
-        let plan = self.engine.evaluate_fleet(&fleet, &context).await;
+        let decisions = self.engine.evaluate_fleet(&fleet, &context).await;
+        let mut planned_ids = HashSet::new();
+        let mut plan = Vec::new();
+        for (sequence, item) in decisions.into_iter().enumerate() {
+            if !planned_ids.insert(item.instance_id.clone()) {
+                tracing::warn!(
+                    target: "controller",
+                    vm = %item.instance_id,
+                    "engine returned duplicate decisions; keeping the first"
+                );
+                continue;
+            }
+            let Some(instance) = self.instances.get(&item.instance_id) else {
+                tracing::warn!(
+                    target: "controller",
+                    vm = %item.instance_id,
+                    "engine returned a decision for an unknown VM"
+                );
+                continue;
+            };
+            let action = item.decision;
+            let Some(target) = action.target() else {
+                continue;
+            };
+            let status = instance.status.read().await;
+            let current = status.thread_count;
+            if target == current {
+                continue;
+            }
+            plan.push((target > current, sequence, item.instance_id, action));
+        }
+        plan.sort_by_key(|(is_up, sequence, _, _)| (*is_up, *sequence));
+
         let cap = self.cfg.max_instances_adjusted_per_poll as usize;
         let mut adjusted = 0usize;
-        for item in plan {
-            let action = item.decision;
+        for (_, _, instance_id, action) in plan {
             if cap > 0 && adjusted >= cap {
                 continue;
             }
-            if self
-                .apply_engine_decision(&item.instance_id, action)
-                .await?
-            {
+            if self.apply_engine_decision(&instance_id, action).await? {
                 adjusted += 1;
             }
         }
