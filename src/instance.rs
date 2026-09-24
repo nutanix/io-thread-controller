@@ -266,6 +266,11 @@ impl Instance {
             .perf
             .as_ref()
             .and_then(|perf| perf.write_latency_us);
+        status.per_vq_depth = snapshot
+            .perf
+            .as_ref()
+            .and_then(|perf| perf.per_vq_depth.clone());
+        status.vq_depth_total = snapshot.perf.as_ref().and_then(|perf| perf.vq_depth_total);
         status.alive = true;
         let backend_util = snapshot.per_thread_util.map(|util| util.clamp(0.0, 1.0));
         if let Some(backend_util) = backend_util {
@@ -478,6 +483,10 @@ pub struct InstanceStatus {
     pub read_latency_us: Option<LatencySummary>,
     /// Latest write-latency histogram digest.
     pub write_latency_us: Option<LatencySummary>,
+    /// Latest in-flight depth for each backend virtqueue.
+    pub per_vq_depth: Option<Vec<u64>>,
+    /// Latest sum of all virtqueue depths.
+    pub vq_depth_total: Option<u64>,
     /// Latest read bandwidth in bytes per second.
     pub read_bytes_per_second: u64,
     /// Latest write bandwidth in bytes per second.
@@ -556,6 +565,10 @@ pub struct InstancePerfSample {
     pub read_latency_us: Option<LatencySummary>,
     /// Write-latency digest, when the backend has write samples.
     pub write_latency_us: Option<LatencySummary>,
+    /// In-flight depth for each backend virtqueue.
+    pub per_vq_depth: Option<Vec<u64>>,
+    /// Sum of all virtqueue depths.
+    pub vq_depth_total: Option<u64>,
 }
 
 impl InstancePerfSample {
