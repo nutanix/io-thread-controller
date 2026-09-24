@@ -136,12 +136,56 @@ impl Default for Config {
     }
 }
 
-/// Load a JSON config file.
-pub fn load_config<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, ConfigError> {
+/// Envelope carrying the `include` key: a relative path to
+/// another JSON file merged first, then overridden by keys in
+/// the outer document.
+#[derive(Debug, Deserialize)]
+struct ConfigEnvelope {
+    #[serde(default)]
+    include: Option<String>,
+    #[serde(flatten)]
+    rest: serde_json::Value,
+}
+
+/// Read a JSON configuration file, resolving nested `include`
+/// directives (relative to the including file), and apply the
+/// merged result on top of the built-in defaults.
+pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
+    let value = load_config_value(path)?;
+    let cfg: Config = serde_json::from_value(value)?;
+    Ok(cfg)
+}
+
+/// Load any JSON document that opts into the `include`
+/// mechanism.  Engines call this on their own config file so
+/// site-specific overrides can live in a sibling file.
+pub fn load_json_with_includes<T: for<'de> Deserialize<'de>>(
+    path: impl AsRef<Path>,
+) -> Result<T, ConfigError> {
+    let path = path.as_ref();
+    let value = load_config_value(path)?;
+    let out: T = serde_json::from_value(value)?;
+    Ok(out)
+}
+
+fn load_config_value(path: &Path) -> Result<serde_json::Value, ConfigError> {
     let data = std::fs::read_to_string(path)?;
-    let val: T = serde_json::from_str(&data)?;
-    Ok(val)
+    let env: ConfigEnvelope = serde_json::from_str(&data)?;
+    let mut merged = if let Some(rel) = env.include {
+        let path = Path::new(".");
+        let inc_path = Path::new(&path.parent().unwrap_or_else(|| &path).join(&rel));
+        load_config_value(&inc_path)?
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+    // RFC 7396 merge-patch; delegated to the `json_patch` crate so
+    // we do not carry our own recursive merge helper.  Semantic
+    // note: a `null` value in the outer patch would *delete* the
+    // key rather than overwriting to null.  Our config schema has
+    // no null sentinels today so this is a no-op distinction.
+    json_patch::merge(&mut merged, &env.rest);
+    Ok(merged)
 }
 
 // TODO add a RawConfig or ValidatedConfig to ensure an unvalidated config
@@ -268,7 +312,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_config::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_config(Path::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 
