@@ -142,6 +142,8 @@ fn is_peer_disconnect_kind(kind: ErrorKind) -> bool {
 
 use std::{io, sync::Arc};
 
+#[cfg(feature = "fake-backend")]
+pub mod fake;
 #[cfg(feature = "qemu-backend")]
 pub mod qemu;
 
