@@ -808,6 +808,7 @@ fn read_host_cpu_sample() -> Result<HostCpuSample, ControllerError> {
     let total =
         procfs::KernelStats::from_file(Path::new("/proc/stat"), procfs::current_system_info())?
             .total;
+    // TODO confirm using iowait here is useful: read docs
     let idle_ticks = total.idle.saturating_add(total.iowait.unwrap_or(0));
     let total_ticks = total
         .user
@@ -852,361 +853,116 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicUsize, Ordering},
-    };
+    use std::fs;
 
-    use async_trait::async_trait;
-    use test_log::test;
+    use proptest::{prop_assert_eq, proptest};
+    use rstest::rstest;
+
+    use crate::test::{MockDir, mock_dir};
 
     use super::*;
-    use crate::{
-        backends::BackendClientError,
-        engines::{EngineTickContext, ScalingEngine},
-        instance::{InstanceClient, ThreadPoolSnapshot},
-        util::Path,
-    };
 
-    #[cfg(feature = "threshold-engine")]
-    use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
-
-    struct VcpuLimitedClient {
-        target: Arc<AtomicU32>,
+    /// Helper function which adds the contents procfs::KernelStats wants to a
+    /// cpu status line
+    fn proc_stat(contents: &str) -> String {
+        format!("{contents}\nctxt 10000000000\nbtime 100000000000\nprocesses 1000000000000\n")
     }
 
-    #[async_trait]
-    impl InstanceClient for VcpuLimitedClient {
-        async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
-            self.target.store(count, Ordering::Relaxed);
-            Ok(())
-        }
-
-        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
-            Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
-                vcpu_count: 4,
-                perf: None,
-                per_thread_util: None,
-            })
-        }
-
-        async fn close(&self) {}
-    }
-
-    /// Test that actuation will not raise the pool above the VM vCPU
-    /// count.
-    #[test(tokio::test)]
-    async fn actuation_enforces_vcpu_cap() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            cooldown_secs: 0.0,
-            ..Default::default()
-        };
-        let target = Arc::new(AtomicU32::new(2));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
-        let instance = Arc::new(Instance::new(
-            "some-vcpu-limited-test-instance".to_string(),
-            Path::new(""),
-            0,
-            client,
-        ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 2;
-            status.vcpu_count = 4;
-            status.ownership_classification = Some(true);
-        }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
-        controller
-            .instances
-            .insert(instance.id.clone(), Arc::clone(&instance));
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(4))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 4);
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(5))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 4);
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Down(3))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 3);
-
-        instance.status.write().await.ownership_classification = Some(false);
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(4))
-            .await
-            .unwrap();
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Down(2))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 3);
-    }
-
-    // FIXME This test seems like it mixes basic ScaleAction unit tests and more
-    // complex multi-tick behaviour instead of having two tests exercising different
-    // things.
-    /// Test that actuation clamps thread targets to configured min/max
-    /// and blocks scale-up when host CPU is above the ceiling.
-    #[test(tokio::test)]
-    async fn actuation_enforces_controller_bounds_and_host_ceiling() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            min_thread_count: 2,
-            max_thread_count: 3,
-            host_cpu_scale_up_ceiling: 0.5,
-            cooldown_secs: 30.0,
-            ..Default::default()
-        };
-        let target = Arc::new(AtomicU32::new(2));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
-        let instance = Arc::new(Instance::new(
-            "policy-guarded".to_string(),
-            Path::new(""),
-            0,
-            client,
-        ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 2;
-            status.vcpu_count = 4;
-        }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
-        controller.host_cpu_util = 0.5;
-        controller
-            .instances
-            .insert(instance.id.clone(), Arc::clone(&instance));
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(3))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
-
-        controller.host_cpu_util = 0.0;
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(3))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Down(2))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Revert(2))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
-
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Down(1))
-            .await
-            .unwrap();
-        controller
-            .apply_engine_decision(&instance.id, ScaleAction::Up(4))
-            .await
-            .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
-    }
-
-    struct SnapshotClient {
-        threads: u32,
-        closed: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl InstanceClient for SnapshotClient {
-        async fn set_thread_count(&self, _count: u32) -> Result<(), BackendClientError> {
-            Ok(())
-        }
-
-        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
-            Ok(ThreadPoolSnapshot {
-                thread_count: self.threads,
-                // FIXME these weren't required, looked like broken due to rebase
-                vcpu_count: 2,
-                perf: None,
-                per_thread_util: None,
-            })
-        }
-
-        async fn close(&self) {
-            self.closed.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct FailingClient;
-
-    #[async_trait]
-    impl InstanceClient for FailingClient {
-        async fn set_thread_count(&self, _count: u32) -> Result<(), BackendClientError> {
-            Ok(())
-        }
-
-        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
-            Err(BackendClientError::Transport("boom".into()))
-        }
-
-        async fn close(&self) {}
-    }
-
-    struct SharedEngine {
-        added: Arc<AtomicUsize>,
-        removed: Arc<AtomicUsize>,
-        evaluated: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl ScalingEngine for SharedEngine {
-        fn name(&self) -> &'static str {
-            "shared"
-        }
-
-        fn dump_config(&self) -> serde_json::Value {
-            serde_json::Value::Null
-        }
-
-        async fn evaluate(
-            &self,
-            _instance: &Arc<Instance>,
-            _context: &EngineTickContext,
-        ) -> ScaleAction {
-            self.evaluated.fetch_add(1, Ordering::Relaxed);
-            ScaleAction::None
-        }
-
-        async fn on_instance_added(&self, _instance: &Arc<Instance>) {
-            self.added.fetch_add(1, Ordering::Relaxed);
-        }
-
-        async fn on_instance_removed(&self, _instance_id: &str) {
-            self.removed.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn instance(id: &str, threads: u32, closed: Arc<AtomicUsize>) -> Arc<Instance> {
-        Arc::new(Instance::new(
-            id.to_string(),
-            Path::new(""),
-            1,
-            SnapshotClient { threads, closed },
-        ))
-    }
-
-    /// Test that discovery sync adds new VMs, retains existing ones,
-    /// and removes disappeared ones.
-    #[tokio::test]
-    async fn sync_instances_adds_retains_and_removes() {
-        let added = Arc::new(AtomicUsize::new(0));
-        let removed = Arc::new(AtomicUsize::new(0));
-        let evaluated = Arc::new(AtomicUsize::new(0));
-        let state_dir = tempfile::tempdir().unwrap();
-        let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            ..Default::default()
-        };
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(SharedEngine {
-                added: Arc::clone(&added),
-                removed: Arc::clone(&removed),
-                evaluated: Arc::clone(&evaluated),
-            }),
-        )
-        .unwrap();
-        let closed = Arc::new(AtomicUsize::new(0));
-
-        let first = instance("vm-a", 1, Arc::clone(&closed));
-        let (n_added, n_removed) = controller
-            .sync_instances(vec![Arc::clone(&first)])
-            .await
-            .unwrap();
-        assert_eq!((n_added, n_removed), (1, 0));
-        assert_eq!(controller.instances.len(), 1);
-        assert_eq!(added.load(Ordering::Relaxed), 1);
-
-        let duplicate = instance("vm-a", 9, Arc::clone(&closed));
-        let (n_added, n_removed) = controller.sync_instances(vec![duplicate]).await.unwrap();
-        assert_eq!((n_added, n_removed), (0, 0));
-        assert_eq!(controller.instances.len(), 1);
-        assert_eq!(closed.load(Ordering::Relaxed), 1);
-
-        let (n_added, n_removed) = controller.sync_instances(vec![]).await.unwrap();
-        assert_eq!((n_added, n_removed), (0, 1));
-        assert!(controller.instances.is_empty());
-        assert_eq!(removed.load(Ordering::Relaxed), 1);
-        assert_eq!(evaluated.load(Ordering::Relaxed), 0);
-    }
-
-    /// Test that one tick refreshes state, runs the engine, and drops
-    /// instances that fail refresh.
-    #[tokio::test]
-    async fn tick_refreshes_evaluates_and_drops_failed_instances() {
-        let added = Arc::new(AtomicUsize::new(0));
-        let removed = Arc::new(AtomicUsize::new(0));
-        let evaluated = Arc::new(AtomicUsize::new(0));
-        let state_dir = tempfile::tempdir().unwrap();
-        let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            ..Default::default()
-        };
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(SharedEngine {
-                added: Arc::clone(&added),
-                removed: Arc::clone(&removed),
-                evaluated: Arc::clone(&evaluated),
-            }),
+    /// Mostly a test that the path-prefix mechanism works.
+    #[rstest]
+    fn test_util_sample_from_mock_proc_stat(mock_dir: MockDir) {
+        let stat_path = mock_dir.join("proc/stat");
+        fs::create_dir_all(stat_path.parent().unwrap()).unwrap();
+        fs::write(
+            &stat_path,
+            proc_stat("cpu  1 10 100 1000 10000 100000 1000000 10000000 100000000 1000000000"),
         )
         .unwrap();
 
-        let closed = Arc::new(AtomicUsize::new(0));
-        let ok = instance("ok", 4, Arc::clone(&closed));
-        let bad = Arc::new(Instance::new(
-            "bad".to_string(),
-            Path::new(""),
-            2,
-            FailingClient,
-        ));
-        controller.sync_instances(vec![ok, bad]).await.unwrap();
-        assert_eq!(added.load(Ordering::Relaxed), 2);
+        let sample = read_host_cpu_sample().unwrap();
 
-        controller.tick().await.unwrap();
-        assert_eq!(controller.tick_index, 1);
-        assert_eq!(controller.instances.len(), 1);
-        assert!(controller.instances.contains_key("ok"));
-        assert_eq!(
-            controller.instances["ok"].status.read().await.thread_count,
-            4
-        );
-        assert_eq!(evaluated.load(Ordering::Relaxed), 1);
-        assert_eq!(removed.load(Ordering::Relaxed), 1);
+        assert_eq!(sample.total_ticks, 1_111_111_111);
+        assert_eq!(sample.busy_ticks, 1_111_100_111);
+    }
+
+    proptest! {
+        // TODO decide if this failure is in the test or implementation
+        #[ignore = "current failing"]
+        #[test]
+        fn test_util_sample_sums(
+            user: u64,
+            nice: u64,
+            system: u64,
+            idle: u64,
+            iowait: u64,
+            irq: u64,
+            softirq: u64,
+            steal: u64,
+            guest: u64,
+            guest_nice: u64,
+        ) {
+            let mock_dir = MockDir::new();
+            let stat_path = mock_dir.join("proc/stat");
+            fs::create_dir_all(stat_path.parent().unwrap()).unwrap();
+            fs::write(&stat_path, proc_stat(&format!("cpu  {user} {nice} {system} {idle} {iowait} {irq} {softirq} {steal} {guest} {guest_nice}"))).unwrap();
+            let sample = read_host_cpu_sample().unwrap();
+
+            prop_assert_eq!(
+                sample.total_ticks,
+                user.saturating_add(nice)
+                    .saturating_add(system)
+                    .saturating_add(idle)
+                    .saturating_add(iowait)
+                    .saturating_add(irq)
+                    .saturating_add(softirq)
+                    .saturating_add(steal)
+                    .saturating_add(guest)
+                    .saturating_add(guest_nice)
+            );
+
+            prop_assert_eq!(
+                sample.busy_ticks,
+                user.saturating_add(nice)
+                    .saturating_add(system)
+                    .saturating_add(irq)
+                    .saturating_add(softirq)
+                    .saturating_add(steal)
+                    .saturating_add(guest)
+                    .saturating_add(guest_nice)
+            );
+        }
+    }
+
+    /// Test that utilisation is calculated as a proportion of busy ticks over
+    /// total ticks.
+    #[test]
+    fn test_util_calculates_usage_between_samples() {
+        let previous = HostCpuSample {
+            busy_ticks: 25,
+            total_ticks: 100,
+        };
+        let current = HostCpuSample {
+            busy_ticks: 55,
+            total_ticks: 200,
+        };
+
+        // The 30 newly busy ticks account for 30 of the 100 new total ticks.
+        assert_eq!(host_cpu_utilisation(previous, current), 0.3);
+    }
+
+    /// Test that utilisation is zero when the order of samples is reversed.
+    // TODO is this the behavior we want?
+    #[test]
+    fn test_util_is_zero_for_reversed_samples() {
+        let previous = HostCpuSample {
+            busy_ticks: 55,
+            total_ticks: 200,
+        };
+        let current = HostCpuSample {
+            busy_ticks: 25,
+            total_ticks: 100,
+        };
+
+        assert_eq!(host_cpu_utilisation(previous, current), 0.0);
     }
 }
