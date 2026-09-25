@@ -136,8 +136,24 @@ impl Default for Config {
     }
 }
 
+/// Attempt to load a JSON config file. If not found, fall back on the
+/// Default implementation.
+pub fn load_config_or_default<T: for<'de> Deserialize<'de> + Default>(
+    path: impl AsRef<std::path::Path>,
+) -> Result<T, ConfigError> {
+    match load_config(path) {
+        r @ Ok(_) => r,
+        Err(ConfigError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Default::default())
+        }
+        e @ Err(_) => e,
+    }
+}
+
 /// Load a JSON config file.
-pub fn load_config<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, ConfigError> {
+pub fn load_config<T: for<'de> Deserialize<'de>>(
+    path: impl AsRef<std::path::Path>,
+) -> Result<T, ConfigError> {
     let path = path.as_ref();
     let data = std::fs::read_to_string(path)?;
     let val: T = serde_json::from_str(&data)?;
