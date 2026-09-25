@@ -36,6 +36,7 @@ use crate::{
         },
     },
     instance::{InstanceClient, ThreadPoolSnapshot},
+    util::Path,
 };
 
 /// Wire client for an QEMU-managed VM.
@@ -261,7 +262,7 @@ impl InstanceClient for QemuInstanceClient {
                 "qemu topology reported no iothread TIDs".into(),
             ));
         }
-        let pid = Process::new(first_tid)?
+        let pid = Process::new_with_root(Path::proc_pid(first_tid))?
             .status()
             .map_err(|e| BackendClientError::InvalidState(format!("pid resolution: {e}")))?
             .tgid;

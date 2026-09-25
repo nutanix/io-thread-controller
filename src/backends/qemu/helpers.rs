@@ -27,7 +27,10 @@ use regex::Regex;
 use rustix::param;
 use thiserror::Error;
 
-use crate::backends::{BackendClientError, VqMapping};
+use crate::{
+    backends::{BackendClientError, VqMapping},
+    util::Path,
+};
 
 /// Errors produced while querying or reconfiguring a QEMU vm.
 #[derive(Debug, Error)]
@@ -197,7 +200,7 @@ impl CpuSample {
             wall: Instant::now(),
         };
 
-        let p = Process::new(pid)?;
+        let p = Process::new_with_root(Path::proc_pid(pid))?;
         for &tid in iothread_tids.values() {
             let stat = p.task_from_tid(tid)?.stat()?;
             out.jiffies.insert(tid, stat.utime + stat.stime);
