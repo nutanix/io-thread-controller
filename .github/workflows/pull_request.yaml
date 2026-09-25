@@ -16,5 +16,5 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: "rustfmt,clippy"
-      - run: sudo apt-get install libvirt-dev
+      - run: sudo apt-get install libvirt-dev fuse3
       - run: make pre-push
