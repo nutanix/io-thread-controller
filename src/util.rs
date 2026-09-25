@@ -90,6 +90,16 @@ impl Path {
     pub fn glob(&self) -> glob::Paths {
         glob::glob(&self.path.to_string_lossy()).expect("valid glob pattern")
     }
+
+    /// `/proc/<pid>` after applying [`IO_THREAD_CONTROLLER_ROOT_PATH`].
+    ///
+    /// `procfs::process::Process::new` always opens the real `/proc`. Callers
+    /// that should honor the mock root pass this path to
+    /// `Process::new_with_root`.
+    pub fn proc_pid(pid: i32) -> std::path::PathBuf {
+        let path = Self::new(&format!("/proc/{pid}"));
+        std::path::PathBuf::from(std::path::Path::as_os_str(&path))
+    }
 }
 
 impl From<&str> for Path {
