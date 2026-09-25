@@ -148,6 +148,8 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+#[cfg(feature = "fake-backend")]
+pub mod fake;
 #[cfg(feature = "qemu-backend")]
 pub mod qemu;
 
