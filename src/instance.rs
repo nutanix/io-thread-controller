@@ -27,7 +27,7 @@ use tokio::sync::RwLock;
 use crate::{
     backends::{BackendClientError, IoThreadProperties, VqMapping},
     rolling::RollingMetrics,
-    util::Path,
+    util::{Path, ProcessExt},
 };
 
 #[derive(Debug, Error)]
@@ -647,7 +647,7 @@ fn read_cpu_sample(
     pid: i32,
     filter: &crate::instance::ThreadNameFilter,
 ) -> Result<CpuSample, CpuSampleError> {
-    let process = Process::new(pid)?;
+    let process = Process::from_pid(pid)?;
     let tasks = process.tasks()?;
     let mut cpu_ticks = 0u64;
     let mut thread_count = 0u32;
@@ -702,7 +702,7 @@ fn read_cpu_sample(
 
 /// Read cgroup v2 CPU quota and throttle counters for `pid`.
 fn read_cgroup_sample(pid: i32) -> Result<CgroupSample, CgroupError> {
-    let process = Process::new(pid)?;
+    let process = Process::from_pid(pid)?;
     let cgroups = process.cgroups()?;
     let path = cgroups
         .0
