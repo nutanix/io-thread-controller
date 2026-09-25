@@ -211,10 +211,10 @@ impl ThresholdEngine {
 
     /// Load `threshold.json`, falling back to built-in defaults when absent.
     pub fn from_config_dir(dir: &Path) -> Result<Self, EngineError> {
-        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
-        // TODO TOCTOU, blindly load and return default if ENOENT
+        let path = dir.join(format!("{ENGINE_NAME}.json"));
         let cfg: ThresholdConfig = if path.exists() {
-            crate::config::load_config(path)?
+            let data = std::fs::read_to_string(&path).map_err(ConfigError::from)?;
+            serde_json::from_str(&data).map_err(ConfigError::from)?
         } else {
             ThresholdConfig::default()
         };

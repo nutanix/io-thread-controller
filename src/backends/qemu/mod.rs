@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
-    config::{ConfigError, load_config},
+    config::ConfigError,
     instance::{Instance, InstanceClient},
     util::Path,
 };
@@ -82,12 +82,12 @@ impl QemuConfig {
     /// Read `<dir>/qemu.json` if present, otherwise return the
     /// built-in defaults.
     pub fn from_dir(dir: &Path) -> Result<Self, ConfigError> {
-        let path = Path::new(&dir.join("qemu.json"));
-        if path.exists() {
-            load_config(path)
-        } else {
-            Ok(Self::default())
+        let path = dir.join("qemu.json");
+        if !path.exists() {
+            return Ok(Self::default());
         }
+        let data = std::fs::read_to_string(&path)?;
+        Ok(serde_json::from_str(&data)?)
     }
 }
 
