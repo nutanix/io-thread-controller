@@ -57,6 +57,7 @@ def test_saturated_workload_does_not_burst_scale(controller, fake_backend):
     validation-window floor.
     """
     fake_backend.set_util(0.95)
+    fake_backend.set_vcpu_count(8)
     controller(
         engine="threshold",
         engine_config=_threshold_config(),

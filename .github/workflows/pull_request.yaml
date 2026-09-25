@@ -16,5 +16,5 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: "rustfmt,clippy"
-      - run: sudo apt-get install libvirt-dev fuse3
+      - run: sudo apt-get install libvirt-dev fuse3 dbus python3-pytest python3-dbus
       - run: make pre-push

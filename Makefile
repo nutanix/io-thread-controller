@@ -49,8 +49,14 @@ clean:
 unit-test:
 	RUST_BACKTRACE=1 cargo test --all-features
 
+.PHONY: component-test
+component-test:
+	cargo build --locked --no-default-features \
+		--features threshold-engine,fake-backend,mockfs
+	python3 -m pytest tests/component -q
+
 .PHONY: test
-test: unit-test
+test: unit-test component-test
 
 .PHONY: pre-push
 pre-push: check test
