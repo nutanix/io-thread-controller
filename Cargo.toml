@@ -85,3 +85,4 @@ rstest = "0.26"
 tempfile = "3"
 test-log = { version = "0.2", features = ["trace"] }
 tokio = { version = "1", features = ["test-util"] }
+proptest = "1"
