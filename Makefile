@@ -51,7 +51,7 @@ unit-test:
 .PHONY: component-test
 component-test:
 	cargo build --locked --no-default-features \
-		--features threshold-engine,fake-backend
+		--features threshold-engine,fake-backend,mockfs
 	python3 -m pytest tests/component
 
 .PHONY: test
