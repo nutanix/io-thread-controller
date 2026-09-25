@@ -96,6 +96,15 @@ class FakeBackend:
     def set_managed(self, managed, vm=None):
         self._update(vm or self.default_vm, managed=managed)
 
+    def set_io_counts(self, read=0, write=0, other=0, vm=None):
+        """Set cumulative read, write, and other I/O counts."""
+        self._update(
+            vm or self.default_vm,
+            read_io_count=read,
+            write_io_count=write,
+            other_io_count=other,
+        )
+
     def thread_count(self, vm=None):
         return self._read(vm or self.default_vm)["thread_count"]
 
