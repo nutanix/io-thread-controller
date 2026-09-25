@@ -12,7 +12,7 @@ use std::{
 };
 
 use futures_util::future::join_all;
-use procfs::{CurrentSI, ProcError};
+use procfs::{FromReadSI, ProcError};
 use serde::{Deserialize, Serialize};
 use statistical::median;
 use thiserror::Error;
@@ -25,6 +25,7 @@ use crate::{
     instance::{Instance, InstanceStatus},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
+    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -804,7 +805,9 @@ impl Controller {
 
 /// Read aggregate host CPU counters.
 fn read_host_cpu_sample() -> Result<HostCpuSample, ControllerError> {
-    let total = procfs::KernelStats::current()?.total;
+    let total =
+        procfs::KernelStats::from_file(Path::new("/proc/stat"), procfs::current_system_info())?
+            .total;
     let idle_ticks = total.idle.saturating_add(total.iowait.unwrap_or(0));
     let total_ticks = total
         .user
