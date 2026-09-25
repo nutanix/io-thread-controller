@@ -236,41 +236,94 @@ where
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    /// Test that the first sample records a baseline and yields no
-    /// rates yet.
-    #[test]
-    fn first_sample_only_establishes_baseline() {
-        let mut metrics = RollingMetrics::new();
-        let t0 = Instant::now();
-        metrics.push_from_procfs_delta(t0, 10, 20, 100.0);
-        assert!(metrics.is_empty());
+    fn expected_cpu_ns(cpu_tick_delta: u64, clock_ticks_per_second: f64) -> u64 {
+        (cpu_tick_delta as f64 * 1_000_000_000.0 / clock_ticks_per_second) as u64
     }
 
-    /// Test that rolling IOPS/CPU-per-IO rates use real elapsed time
-    /// between samples.
-    #[test]
-    fn rates_use_real_elapsed_time() {
-        let mut metrics = RollingMetrics::new();
-        let t0 = Instant::now();
-        metrics.push_from_procfs_delta(t0, 10, 20, 100.0);
-        metrics.push_from_procfs_delta(t0 + Duration::from_secs(2), 210, 120, 100.0);
-        assert_eq!(metrics.iops_over(Duration::from_secs(60)), Some(100));
-        assert_eq!(
-            metrics.cpu_us_per_io_over(Duration::from_secs(60)),
-            Some(5_000)
-        );
-    }
+    proptest! {
+        #[test]
+        fn first_sample_leaves_the_window_empty(
+            io_ops in any::<u64>(),
+            cpu_ticks in any::<u64>(),
+            hz in prop::num::f64::ANY,
+        ) {
+            let mut metrics = RollingMetrics::new();
+            metrics.push_from_procfs_delta(Instant::now(), io_ops, cpu_ticks, hz);
+            prop_assert!(metrics.is_empty());
+            prop_assert!(metrics.iops_over(Duration::from_secs(60)).is_none());
+            prop_assert!(metrics.cpu_us_per_io_over(Duration::from_secs(60)).is_none());
+        }
 
-    /// Test that a counter reset drops prior rates and starts a new
-    /// baseline.
-    #[test]
-    fn counter_reset_replaces_baseline() {
-        let mut metrics = RollingMetrics::new();
-        let t0 = Instant::now();
-        metrics.push_from_procfs_delta(t0, 100, 100, 100.0);
-        metrics.push_from_procfs_delta(t0 + Duration::from_secs(1), 10, 10, 100.0);
-        assert!(metrics.is_empty());
+        #[test]
+        fn backwards_counter_or_non_positive_hz_keeps_len_and_resets_baseline(
+            io0 in 1u64..1_000_000,
+            cpu0 in 1u64..1_000_000,
+            io_delta in 0u64..10_000,
+            cpu_delta in 0u64..10_000,
+            elapsed_ms in 1u64..5_000,
+            reset_kind in 0u8..3,
+        ) {
+            let hz = 100.0;
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let io1 = io0 + io_delta;
+            let cpu1 = cpu0 + cpu_delta;
+            metrics.push_from_procfs_delta(t0, io0, cpu0, hz);
+            metrics.push_from_procfs_delta(t0 + Duration::from_millis(elapsed_ms), io1, cpu1, hz);
+            prop_assert_eq!(metrics.len(), 1);
+
+            let t_reset = t0 + Duration::from_millis(elapsed_ms + 1);
+            let (base_io, base_cpu) = match reset_kind {
+                0 => {
+                    metrics.push_from_procfs_delta(t_reset, io1 - 1, cpu1, hz);
+                    (io1 - 1, cpu1)
+                }
+                1 => {
+                    metrics.push_from_procfs_delta(t_reset, io1, cpu1 - 1, hz);
+                    (io1, cpu1 - 1)
+                }
+                _ => {
+                    metrics.push_from_procfs_delta(t_reset, io1 + 1, cpu1 + 1, 0.0);
+                    (io1 + 1, cpu1 + 1)
+                }
+            };
+            prop_assert_eq!(metrics.len(), 1);
+
+            let t_next = t_reset + Duration::from_millis(elapsed_ms);
+            metrics.push_from_procfs_delta(t_next, base_io + io_delta, base_cpu + cpu_delta, hz);
+            let (observed_io, observed_cpu_ns) = metrics.last_delta().unwrap();
+            prop_assert_eq!(observed_io, io_delta);
+            prop_assert_eq!(observed_cpu_ns, expected_cpu_ns(cpu_delta, hz));
+        }
+
+        #[test]
+        fn monotonic_pair_matches_elapsed_rate_formula(
+            io0 in 0u64..1_000_000,
+            cpu0 in 0u64..1_000_000,
+            io_delta in 1u64..100_000,
+            cpu_delta in 0u64..100_000,
+            elapsed_ms in 1u64..60_000,
+            hz in 1.0f64..10_000.0,
+        ) {
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let elapsed = Duration::from_millis(elapsed_ms);
+            metrics.push_from_procfs_delta(t0, io0, cpu0, hz);
+            metrics.push_from_procfs_delta(t0 + elapsed, io0 + io_delta, cpu0 + cpu_delta, hz);
+
+            let wall_ns = u64::try_from(elapsed.as_nanos()).unwrap();
+            let expected_iops = (u128::from(io_delta) * 1_000_000_000 / u128::from(wall_ns)) as u64;
+            prop_assert_eq!(metrics.iops_over(Duration::from_secs(60)), Some(expected_iops));
+
+            let cpu_ns = expected_cpu_ns(cpu_delta, hz);
+            prop_assert_eq!(
+                metrics.cpu_us_per_io_over(Duration::from_secs(60)),
+                Some(cpu_ns / io_delta / 1_000)
+            );
+        }
     }
 }

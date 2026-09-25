@@ -441,7 +441,27 @@ fn parse_qmp_envelope(cmd: &str, body: &str) -> Result<Box<RawValue>, QemuError>
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn arb_json() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i32>().prop_map(serde_json::Value::from),
+            "[a-z0-9 ]{0,12}".prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(2, 8, 4, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                prop::collection::hash_map("[a-z]{1,6}", inner, 0..3)
+                    .prop_map(|map| { serde_json::Value::Object(map.into_iter().collect()) }),
+            ]
+        })
+        // Option<RawValue> decodes a JSON null return as a missing payload.
+        .prop_filter("null return is absent", |value| !value.is_null())
+    }
 
     /// Test that domain XML detection accepts virtio-scsi model
     /// variants and rejects others.
@@ -457,63 +477,89 @@ mod tests {
         assert!(!xml_has_virtio_scsi(d));
     }
 
-    /// Test that a QMP success envelope yields the return payload.
-    #[test]
-    fn parse_envelope_extracts_return() {
-        let body = r#"{"return":{"foo":42}}"#;
-        let v = parse_qmp_envelope("query", body).unwrap();
-        assert_eq!(v.get(), r#"{"foo":42}"#);
-    }
-
-    /// Test that a QMP error envelope becomes a typed error with
-    /// class/desc.
-    #[test]
-    fn parse_envelope_surfaces_qmp_error() {
-        let body = r#"{"error":{"class":"GenericError","desc":"boom"}}"#;
-        let err = parse_qmp_envelope("query", body).unwrap_err();
-        match err {
-            QemuError::QmpError { class, desc, .. } => {
-                assert_eq!(class, "GenericError");
-                assert_eq!(desc, "boom");
+    proptest! {
+        #[test]
+        fn qmp_error_envelope_preserves_class_and_desc(
+            cmd in "[a-z-]{1,16}",
+            class in "[a-zA-Z0-9 .,_-]{0,32}",
+            desc in "[a-zA-Z0-9 .,_-]{0,32}",
+        ) {
+            let body = serde_json::json!({
+                "error": {"class": class, "desc": desc}
+            })
+            .to_string();
+            match parse_qmp_envelope(&cmd, &body).unwrap_err() {
+                QemuError::QmpError {
+                    cmd: got_cmd,
+                    class: got_class,
+                    desc: got_desc,
+                } => {
+                    prop_assert_eq!(got_cmd, cmd);
+                    prop_assert_eq!(got_class, class);
+                    prop_assert_eq!(got_desc, desc);
+                }
+                other => panic!("unexpected err: {other:?}"),
             }
-            other => panic!("unexpected err: {other:?}"),
+        }
+
+        #[test]
+        fn qmp_return_envelope_yields_the_payload_unchanged(payload in arb_json()) {
+            let payload = serde_json::to_string(&payload).unwrap();
+            let body = format!(r#"{{"return":{payload}}}"#);
+            let parsed = parse_qmp_envelope("query", &body).unwrap();
+            prop_assert_eq!(parsed.get(), payload);
         }
     }
 
-    /// Test that blockstats counters are summed across disks.
+    /// Test that an empty blockstats array yields no sample.
     #[test]
-    fn parse_blockstats_sums_across_devices() {
-        let body = r#"[
-            {"stats": {
-                "rd_operations": 100,
-                "wr_operations": 200,
-                "flush_operations": 3,
-                "unmap_operations": 1,
-                "rd_bytes": 4096,
-                "wr_bytes": 8192
-            }},
-            {"stats": {
-                "rd_operations": 50,
-                "wr_operations": 25,
-                "flush_operations": 0,
-                "unmap_operations": 0,
-                "rd_bytes": 2048,
-                "wr_bytes": 1024
-            }}
-        ]"#;
-        let p = parse_blockstats(body).unwrap().unwrap();
-        assert_eq!(p.read_io_count, 150);
-        assert_eq!(p.write_io_count, 225);
-        assert_eq!(p.other_io_count, 4);
-        assert_eq!(p.read_bytes_total, 6144);
-        assert_eq!(p.write_bytes_total, 9216);
-        assert_eq!(p.total_io_count(), 150 + 225 + 4);
+    fn blockstats_empty_array_is_none() {
+        assert!(parse_blockstats("[]").unwrap().is_none());
     }
 
-    /// Test that empty blockstats parses as unavailable/`None`.
+    /// Test that one device's counters are copied and omitted keys stay zero.
     #[test]
-    fn parse_blockstats_empty_returns_unavailable() {
-        let p = parse_blockstats("[]").unwrap();
-        assert!(p.is_none());
+    fn blockstats_reads_one_device() {
+        let body = r#"[{"stats":{"rd_operations":3,"wr_bytes":8,"flush_operations":1}}]"#;
+        let perf = parse_blockstats(body).unwrap().unwrap();
+        assert_eq!(perf.read_io_count, 3);
+        assert_eq!(perf.write_io_count, 0);
+        assert_eq!(perf.other_io_count, 1);
+        assert_eq!(perf.read_bytes_total, 0);
+        assert_eq!(perf.write_bytes_total, 8);
+    }
+
+    /// Test that device counters are added, with flush and unmap folded into
+    /// other I/O.
+    #[test]
+    fn blockstats_sums_devices() {
+        let body = r#"[
+            {"stats":{"rd_bytes":10,"wr_bytes":20,"rd_operations":1,"wr_operations":2,"flush_operations":3,"unmap_operations":4}},
+            {"stats":{"rd_bytes":5,"wr_bytes":6,"rd_operations":7,"wr_operations":8,"flush_operations":9,"unmap_operations":10}}
+        ]"#;
+        let perf = parse_blockstats(body).unwrap().unwrap();
+        assert_eq!(perf.read_io_count, 8);
+        assert_eq!(perf.write_io_count, 10);
+        assert_eq!(perf.other_io_count, 26);
+        assert_eq!(perf.read_bytes_total, 15);
+        assert_eq!(perf.write_bytes_total, 26);
+    }
+
+    /// Test that a counter sum past `u64::MAX` saturates.
+    #[test]
+    fn blockstats_saturates_on_overflow() {
+        let max = u64::MAX;
+        let body = format!(
+            r#"[
+                {{"stats":{{"rd_bytes":{max},"wr_bytes":{max},"rd_operations":{max},"wr_operations":{max},"flush_operations":{max},"unmap_operations":1}}}},
+                {{"stats":{{"rd_bytes":1,"wr_bytes":1,"rd_operations":1,"wr_operations":1,"flush_operations":1,"unmap_operations":{max}}}}}
+            ]"#
+        );
+        let perf = parse_blockstats(&body).unwrap().unwrap();
+        assert_eq!(perf.read_io_count, max);
+        assert_eq!(perf.write_io_count, max);
+        assert_eq!(perf.other_io_count, max);
+        assert_eq!(perf.read_bytes_total, max);
+        assert_eq!(perf.write_bytes_total, max);
     }
 }

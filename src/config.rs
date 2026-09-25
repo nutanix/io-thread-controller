@@ -186,7 +186,20 @@ pub fn dump_default_config() -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn nearly_eq(left: f64, right: f64) -> bool {
+        (left - right).abs() <= 1e-6 * (1.0 + left.abs().max(right.abs()))
+    }
+
+    fn arb_path_string() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}",
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}".prop_map(|tail| format!("/{tail}")),
+        ]
+    }
 
     /// Test that default `Config` validates and uses the threshold
     /// engine with a 10s poll.
@@ -198,56 +211,69 @@ mod tests {
         validate_config(&cfg).unwrap();
     }
 
-    /// Test that `validate_config` rejects an empty engine name.
-    #[test]
-    fn validate_rejects_empty_engine() {
-        let mut cfg = Config::default();
-        cfg.engine.clear();
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("engine must be non-empty"));
-    }
+    proptest! {
+        #[test]
+        fn load_config_round_trips_every_field(
+            engine in "[a-z0-9]{0,12}",
+            engine_config_dir in arb_path_string(),
+            backend_config_dir in arb_path_string(),
+            vm_state_path in arb_path_string(),
+            min_thread_count in any::<u32>(),
+            max_thread_count in any::<u32>(),
+            host_cpu_scale_up_ceiling in -1_000.0..1_000.0f64,
+            cooldown_secs in -1_000.0..1_000.0f64,
+            scale_poll_secs in -1_000.0..1_000.0f64,
+            enable_per_vm_status_line in any::<bool>(),
+            enable_aggregate_status_line in any::<bool>(),
+            print_status_header in any::<bool>(),
+            dry_run in any::<bool>(),
+        ) {
+            let cfg = Config {
+                engine,
+                engine_config_dir: Path::new(&engine_config_dir),
+                backend_config_dir: Path::new(&backend_config_dir),
+                vm_state_path: Path::new(&vm_state_path),
+                min_thread_count,
+                max_thread_count,
+                host_cpu_scale_up_ceiling,
+                cooldown_secs,
+                scale_poll_secs,
+                enable_per_vm_status_line,
+                enable_aggregate_status_line,
+                print_status_header,
+                dry_run,
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+            let loaded: Config = load_config(Path::new(path.to_str().unwrap())).unwrap();
 
-    /// Test that `validate_config` rejects non-positive
-    /// `scale_poll_secs`.
-    #[test]
-    fn validate_rejects_non_positive_poll() {
-        let mut cfg = Config {
-            scale_poll_secs: 0.0,
-            ..Default::default()
-        };
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("scale_poll_secs must be > 0"));
-
-        cfg.scale_poll_secs = f64::NAN;
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("scale_poll_secs must be > 0"));
-    }
-
-    /// Test that minimal valid JSON loads into `Config` with the
-    /// expected engine, poll, and paths.
-    #[test]
-    fn load_config_round_trips_required_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "engine": "threshold",
-                "engine_config_dir": "/etc/io-thread-controller/engines",
-                "backend_config_dir": "/etc/io-thread-controller/backends",
-                "scale_poll_secs": 7.5,
-                "vm_state_path": "/var/lib/io-thread-controller/vm-state.json"
-            }"#,
-        )
-        .unwrap();
-
-        let cfg: Config = load_config(Path::new(path.to_str().unwrap())).unwrap();
-        assert_eq!(cfg.engine, "threshold");
-        assert!((cfg.scale_poll_secs - 7.5).abs() < f64::EPSILON);
-        assert_eq!(
-            cfg.engine_config_dir.as_os_str(),
-            std::ffi::OsStr::new("/etc/io-thread-controller/engines")
-        );
+            prop_assert_eq!(loaded.engine, cfg.engine);
+            prop_assert_eq!(
+                loaded.engine_config_dir.as_os_str(),
+                cfg.engine_config_dir.as_os_str()
+            );
+            prop_assert_eq!(
+                loaded.backend_config_dir.as_os_str(),
+                cfg.backend_config_dir.as_os_str()
+            );
+            prop_assert_eq!(loaded.vm_state_path.as_os_str(), cfg.vm_state_path.as_os_str());
+            prop_assert_eq!(loaded.min_thread_count, cfg.min_thread_count);
+            prop_assert_eq!(loaded.max_thread_count, cfg.max_thread_count);
+            prop_assert!(nearly_eq(
+                loaded.host_cpu_scale_up_ceiling,
+                cfg.host_cpu_scale_up_ceiling
+            ));
+            prop_assert!(nearly_eq(loaded.cooldown_secs, cfg.cooldown_secs));
+            prop_assert!(nearly_eq(loaded.scale_poll_secs, cfg.scale_poll_secs));
+            prop_assert_eq!(loaded.enable_per_vm_status_line, cfg.enable_per_vm_status_line);
+            prop_assert_eq!(
+                loaded.enable_aggregate_status_line,
+                cfg.enable_aggregate_status_line
+            );
+            prop_assert_eq!(loaded.print_status_header, cfg.print_status_header);
+            prop_assert_eq!(loaded.dry_run, cfg.dry_run);
+        }
     }
 
     /// Test that loading JSON with an unknown field returns

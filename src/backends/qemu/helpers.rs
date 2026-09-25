@@ -285,45 +285,110 @@ pub fn next_qemu_iothread_id(existing: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    /// Test that vQ round-robin mapping spreads queues across IOThreads
-    /// as evenly as possible.
-    #[test]
-    fn round_robin_distributes_evenly() {
-        let ids = vec!["iot0".to_string(), "iot1".to_string(), "iot2".to_string()];
-        let mapping = round_robin_vq_mapping(&ids, 7);
-        let counts: Vec<usize> = mapping.iter().map(|m| m.vqs.len()).collect();
-        assert_eq!(counts, vec![3, 2, 2]);
-        assert_eq!(mapping[0].vqs, vec![0, 3, 6]);
-        assert_eq!(mapping[1].vqs, vec![1, 4]);
-        assert_eq!(mapping[2].vqs, vec![2, 5]);
+    proptest! {
+        #[test]
+        fn round_robin_partitions_queues(
+            ids in prop::collection::vec("[a-z]{1,4}", 0..8),
+            vq_count in 0u16..128,
+        ) {
+            let mapping = round_robin_vq_mapping(&ids, vq_count);
+            if ids.is_empty() || vq_count == 0 {
+                prop_assert!(mapping.is_empty());
+                return Ok(());
+            }
+
+            prop_assert_eq!(mapping.len(), ids.len());
+            let mut seen = vec![false; usize::from(vq_count)];
+            for (idx, entry) in mapping.iter().enumerate() {
+                prop_assert_eq!(&entry.iothread, &ids[idx]);
+                for &vq in &entry.vqs {
+                    prop_assert_eq!(usize::from(vq) % ids.len(), idx);
+                    prop_assert!(!seen[usize::from(vq)]);
+                    seen[usize::from(vq)] = true;
+                }
+            }
+            prop_assert!(seen.into_iter().all(|present| present));
+            let sizes: Vec<usize> = mapping.iter().map(|entry| entry.vqs.len()).collect();
+            let min = sizes.iter().copied().min().unwrap();
+            let max = sizes.iter().copied().max().unwrap();
+            prop_assert!(max - min <= 1);
+        }
+
+        #[test]
+        fn next_id_is_the_lowest_missing_iot(
+            present in prop::collection::btree_set(0u32..1024, 0..32),
+        ) {
+            let ids: Vec<String> = present.iter().map(|n| format!("iot{n}")).collect();
+            let expected = (0..1024).find(|n| !present.contains(n)).unwrap();
+            prop_assert_eq!(next_qemu_iothread_id(&ids), format!("iot{expected}"));
+        }
     }
 
-    /// Test that `next_qemu_iothread_id` fills the lowest missing
-    /// `iotN` id.
+    /// Test that managed `iotN` threads are kept in id order and other ids are
+    /// dropped.
     #[test]
-    fn next_id_fills_gaps_in_order() {
-        let ids = vec!["iot0".to_string(), "iot2".to_string()];
-        assert_eq!(next_qemu_iothread_id(&ids), "iot1");
-        let ids = vec!["iot0".to_string(), "iot1".to_string()];
-        assert_eq!(next_qemu_iothread_id(&ids), "iot2");
-    }
-
-    /// Test that prometheus scrape text yields IOThread ids, TIDs, and
-    /// the virtio-scsi device path.
-    #[test]
-    fn topology_parses_prometheus_body() {
-        let body = r#"# HELP foo
-qemu_iothread_info{id="iot0",tid="123"} 1
+    fn topology_keeps_managed_threads_in_id_order() {
+        let body = r#"
 qemu_iothread_info{id="iot1",tid="124"} 1
 qemu_iothread_info{id="dirtybitmap",tid="999"} 1
-qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 4
+qemu_iothread_info{id="iot0",tid="123"} 1
 "#;
         let topo = QemuTopology::new(body);
         assert_eq!(topo.iothreads, vec!["iot0", "iot1"]);
         assert_eq!(topo.iothread_tids.get("iot0"), Some(&123));
+        assert_eq!(topo.iothread_tids.get("iot1"), Some(&124));
+        assert_eq!(topo.iothread_tids.len(), 2);
+    }
+
+    /// Test that `thread_id` and `path` are accepted in place of `tid` and
+    /// `device`.
+    #[test]
+    fn topology_accepts_label_aliases() {
+        let body = r#"
+qemu_iothread_info{id="iot0",thread_id="321"} 1
+qemu_virtio_scsi_num_queues{path="/machine/peripheral/scsi0"} 4
+"#;
+        let topo = QemuTopology::new(body);
+        assert_eq!(topo.iothreads, vec!["iot0"]);
+        assert_eq!(topo.iothread_tids.get("iot0"), Some(&321));
         assert_eq!(topo.device_path, "/machine/peripheral/scsi0");
         assert_eq!(topo.vq_count, 4);
+    }
+
+    /// Test that the first device wins, noise lines are ignored, and a later
+    /// thread is kept.
+    #[test]
+    fn topology_keeps_the_first_device_and_later_threads() {
+        let body = r#"
+# HELP foo
+not a metric
+qemu_virtio_scsi_num_queues{device=""} 3
+qemu_iothread_info{id="iot7",tid="nope"} 1
+qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 4
+qemu_iothread_info{id="iot0",tid="123"} 1
+qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi1"} 99
+"#;
+        let topo = QemuTopology::new(body);
+        assert_eq!(topo.iothreads, vec!["iot0"]);
+        assert_eq!(topo.iothread_tids.get("iot0"), Some(&123));
+        assert_eq!(topo.iothread_tids.len(), 1);
+        assert_eq!(topo.device_path, "/machine/peripheral/scsi0");
+        assert_eq!(topo.vq_count, 4);
+    }
+
+    /// Test that a repeated IOThread id keeps the tid from the last line.
+    #[test]
+    fn topology_keeps_the_last_tid_for_a_repeated_id() {
+        let body = r#"
+qemu_iothread_info{id="iot0",tid="1"} 1
+qemu_iothread_info{id="iot0",tid="2"} 1
+"#;
+        let topo = QemuTopology::new(body);
+        assert_eq!(topo.iothreads, vec!["iot0"]);
+        assert_eq!(topo.iothread_tids.get("iot0"), Some(&2));
     }
 }
