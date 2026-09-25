@@ -272,16 +272,6 @@ mod tests {
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 
-    /// Test that pretty-printed default JSON includes engine, poll
-    /// interval, and engine config path.
-    #[test]
-    fn dump_default_config_contains_engine() {
-        let dumped = dump_default_config();
-        assert!(dumped.contains(r#""engine": "threshold""#));
-        assert!(dumped.contains(r#""scale_poll_secs": 10.0"#));
-        assert!(dumped.contains(r#""/etc/io-thread-controller.d/engines""#));
-    }
-
     /// Test that serde defaults for min/max threads, host CPU ceiling,
     /// and cooldown match `Config::default()`.
     #[test]

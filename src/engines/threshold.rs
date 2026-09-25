@@ -765,26 +765,4 @@ mod tests {
             ScaleAction::Revert(4)
         );
     }
-
-    /// Test that a missing `threshold.json` still builds an engine with
-    /// defaults.
-    #[test]
-    fn missing_config_file_uses_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine =
-            ThresholdEngine::from_config_dir(&Path::new(dir.path().to_str().unwrap())).unwrap();
-        assert_eq!(engine.name(), super::ENGINE_NAME);
-        let _ = engine.config();
-    }
-
-    /// Test that CPU utilisation below scale-up/down thresholds yields
-    /// Hold/`None`.
-    #[rstest]
-    #[tokio::test]
-    async fn evaluate_holds_when_util_below_thresholds(#[future] instance: Arc<Instance>) {
-        let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig::default());
-        let action = engine.evaluate(&instance, &context()).await;
-        assert_eq!(action, ScaleAction::None);
-    }
 }

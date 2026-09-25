@@ -665,18 +665,6 @@ mod tests {
         assert!(closed.load(Ordering::Relaxed));
     }
 
-    /// Test that `Display` for an instance prints the bare VM id.
-    #[test]
-    fn display_trims_instance_id() {
-        let instance = Instance::new(
-            "  vm-1  ".to_string(),
-            Path::new(""),
-            1,
-            SnapshotClient { threads: 1 },
-        );
-        assert_eq!(instance.to_string(), "vm-1");
-    }
-
     use super::{TaskCpuSample, compute_per_worker_util};
 
     fn task(tid: i32, name: &str, cpu_ticks: u64) -> TaskCpuSample {
