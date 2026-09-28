@@ -9,24 +9,9 @@ import time
 
 import pytest
 
-from conftest import wait_for
+from conftest import POLL_S, _prepare, wait_for
 
-POLL_S = 0.2
-VCPU_COUNT = 16
 BASELINE_IO = 10_000
-
-
-@pytest.fixture
-def fast_threshold():
-    """Decisions land on the next eligible poll, with validation disabled."""
-    return {
-        "scale_up_threshold_percent": 60,
-        "scale_down_sustain_polls": 1,
-        "max_scale_down_step": 1,
-        "scale_up_min_gain_percent": 0,
-        "scale_down_revert_drop_percent": 0,
-        "scale_validation_sample_polls": 0,
-    }
 
 
 @pytest.fixture
@@ -42,28 +27,6 @@ def validating_threshold():
     }
 
 
-@pytest.fixture
-def run_threshold(controller):
-    """Start the daemon on the threshold engine with open controller bounds."""
-
-    def start(engine_config, **overrides):
-        settings = {
-            "scale_poll_secs": POLL_S,
-            "min_thread_count": 1,
-            "max_thread_count": 8,
-            "host_cpu_scale_up_ceiling_percent": 0,
-            "cooldown_secs": 0,
-        }
-        settings.update(overrides)
-        controller(
-            engine="threshold",
-            engine_config=engine_config,
-            controller_overrides=settings,
-        )
-
-    return start
-
-
 def _ticked(controller):
     """True once the first poll has classified the VM.
 
@@ -75,13 +38,6 @@ def _ticked(controller):
     if not path.exists():
         return False
     return "vm-a" in path.read_text()
-
-
-def _prepare(fake_backend, threads, util, io=0):
-    fake_backend.set_threads(threads)
-    fake_backend.set_vcpu_count(VCPU_COUNT)
-    fake_backend.set_util(util)
-    fake_backend.set_io_counts(io, 0, 0)
 
 
 def test_hold_below_scale_up_threshold(controller, fake_backend, run_threshold, fast_threshold):

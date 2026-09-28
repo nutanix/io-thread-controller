@@ -26,6 +26,7 @@ LOGICAL_OWNERSHIP = "/run/io-thread-controller/vm-ownership.json"
 MOCKFS_BUS_NAME = "com.nutanix.mockfs1"
 MOCKFS_OBJECT_PATH = "/com/nutanix/mockfs1"
 MOCKFS_INTERFACE = "com.nutanix.mockfs1"
+POLL_S = 0.2
 
 
 def wait_for(predicate, timeout, description):
@@ -151,6 +152,22 @@ class FakeBackend:
             temporary.write_text(json.dumps(data))
             os.replace(temporary, path)
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _prepare(fake_backend, threads, util, io=0, vcpu=16):
+    """Set the default VM's threads, utilisation, vCPU cap, and read I/O."""
+    fake_backend.set_threads(threads)
+    fake_backend.set_vcpu_count(vcpu)
+    fake_backend.set_util(util)
+    fake_backend.set_io_counts(io, 0, 0)
+
+
+def _setup_fake_backend(root):
+    """Write ``fake.json`` so the daemon reads this tree's VM directory."""
+    _write_json(
+        _physical(root, LOGICAL_BACKEND_DIR) / "fake.json",
+        {"state_dir": LOGICAL_STATE_DIR},
+    )
 
 
 class DBusServer:
@@ -326,10 +343,7 @@ class Controller:
             _physical(self.root, LOGICAL_ENGINE_DIR) / ("%s.json" % engine),
             engine_config,
         )
-        _write_json(
-            _physical(self.root, LOGICAL_BACKEND_DIR) / "fake.json",
-            {"state_dir": LOGICAL_STATE_DIR},
-        )
+        _setup_fake_backend(self.root)
         self.start()
 
     def start(self):
@@ -408,3 +422,38 @@ def controller(tmp_path, fake_backend, dbus_server):
     launched = Controller(tmp_path, binary, dbus_server)
     yield launched
     launched.stop()
+
+
+@pytest.fixture
+def fast_threshold():
+    """Decisions land on the next eligible poll, with validation disabled."""
+    return {
+        "scale_up_threshold_percent": 60,
+        "scale_down_sustain_polls": 1,
+        "max_scale_down_step": 1,
+        "scale_up_min_gain_percent": 0,
+        "scale_down_revert_drop_percent": 0,
+        "scale_validation_sample_polls": 0,
+    }
+
+
+@pytest.fixture
+def run_threshold(controller):
+    """Start the daemon on the threshold engine with open controller bounds."""
+
+    def start(engine_config, **overrides):
+        settings = {
+            "scale_poll_secs": POLL_S,
+            "min_thread_count": 1,
+            "max_thread_count": 8,
+            "host_cpu_scale_up_ceiling_percent": 0,
+            "cooldown_secs": 0,
+        }
+        settings.update(overrides)
+        controller(
+            engine="threshold",
+            engine_config=engine_config,
+            controller_overrides=settings,
+        )
+
+    return start

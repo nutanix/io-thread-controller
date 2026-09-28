@@ -18,7 +18,7 @@ validation-window floor.
 
 import time
 
-from conftest import wait_for
+from conftest import _prepare, wait_for
 
 
 # Values picked so a saturated workload can grow at most one
@@ -50,26 +50,19 @@ def _threshold_config():
     }
 
 
-def test_saturated_workload_does_not_burst_scale(controller, fake_backend):
+def test_saturated_workload_does_not_burst_scale(fake_backend, run_threshold):
     """A hot workload should NOT burn through every scale-up
     slot in a couple of polls.  We prove this by measuring
     inter-scale spacing and asserting it stays above the
     validation-window floor.
     """
-    fake_backend.set_util(0.95)
-    fake_backend.set_vcpu_count(8)
-    controller(
-        engine="threshold",
-        engine_config=_threshold_config(),
-        controller_overrides={
-            "scale_poll_secs": POLL_INTERVAL_S,
-            "min_thread_count": 1,
-            # Cap low so the test finishes fast; the assertion
-            # measures inter-scale spacing, not the target count.
-            "max_thread_count": 6,
-            "host_cpu_scale_up_ceiling_percent": 0,
-            "cooldown_secs": 0,
-        },
+    _prepare(fake_backend, threads=1, util=0.95, vcpu=8)
+    run_threshold(
+        _threshold_config(),
+        scale_poll_secs=POLL_INTERVAL_S,
+        # Cap low so the test finishes fast; the assertion
+        # measures inter-scale spacing, not the target count.
+        max_thread_count=6,
     )
 
     # Wait for the first scale to land so we know the

@@ -9,9 +9,8 @@ import json
 import re
 import time
 
-from conftest import wait_for
+from conftest import POLL_S, _prepare, wait_for
 
-POLL_S = 0.2
 HEALTHY_VM = "vm-a"
 FAILED_VM = "vm-bad"
 
@@ -25,18 +24,6 @@ _ACTION_RE = re.compile(r'\baction="?([A-Za-z]+)"?')
 def _plain(logs):
     """Drop SGR color codes so field matchers see ``tracked=1`` and ``status:``."""
     return _ANSI_RE.sub("", logs)
-
-
-def _fast_engine():
-    """Threshold settings that scale on the next eligible poll."""
-    return {
-        "scale_up_threshold_percent": 60,
-        "scale_down_sustain_polls": 1,
-        "max_scale_down_step": 1,
-        "scale_up_min_gain_percent": 0,
-        "scale_down_revert_drop_percent": 0,
-        "scale_validation_sample_polls": 0,
-    }
 
 
 def _stat(user, idle):
@@ -92,22 +79,10 @@ def _engine_actions(logs):
     return actions
 
 
-def test_actuation_enforces_vcpu_cap(controller, fake_backend):
+def test_actuation_enforces_vcpu_cap(controller, fake_backend, run_threshold, fast_threshold):
     """A managed VM's pool stays within its vCPU count, and an unmanaged VM does not move."""
-    fake_backend.set_threads(3)
-    fake_backend.set_vcpu_count(4)
-    fake_backend.set_util(0.95)
-    controller(
-        engine="threshold",
-        engine_config=_fast_engine(),
-        controller_overrides={
-            "scale_poll_secs": POLL_S,
-            "min_thread_count": 1,
-            "max_thread_count": 8,
-            "host_cpu_scale_up_ceiling_percent": 0,
-            "cooldown_secs": 0,
-        },
-    )
+    _prepare(fake_backend, threads=3, util=0.95, vcpu=4)
+    run_threshold(fast_threshold)
 
     wait_for(
         lambda: 4 in fake_backend.calls(),
@@ -142,22 +117,15 @@ def test_actuation_enforces_vcpu_cap(controller, fake_backend):
 
 
 def test_actuation_enforces_controller_bounds_and_host_ceiling(
-    controller, fake_backend, mock_proc
+    controller, fake_backend, mock_proc, run_threshold, fast_threshold
 ):
     """Controller min, max, host CPU ceiling, and cooldown gate ordinary scales."""
-    fake_backend.set_threads(2)
-    fake_backend.set_vcpu_count(8)
-    fake_backend.set_util(0.95)
-    controller(
-        engine="threshold",
-        engine_config=_fast_engine(),
-        controller_overrides={
-            "scale_poll_secs": POLL_S,
-            "min_thread_count": 2,
-            "max_thread_count": 3,
-            "host_cpu_scale_up_ceiling_percent": 0,
-            "cooldown_secs": 30,
-        },
+    _prepare(fake_backend, threads=2, util=0.95, vcpu=8)
+    run_threshold(
+        fast_threshold,
+        min_thread_count=2,
+        max_thread_count=3,
+        cooldown_secs=30,
     )
     wait_for(
         lambda: fake_backend.calls() == [3],
@@ -200,19 +168,8 @@ def test_actuation_enforces_controller_bounds_and_host_ceiling(
     controller.stop()
     mock_proc.register_sequence("/stat", _high_host_sequence())
     fake_backend.clear_calls()
-    fake_backend.set_threads(1)
-    fake_backend.set_util(0.95)
-    controller(
-        engine="threshold",
-        engine_config=_fast_engine(),
-        controller_overrides={
-            "scale_poll_secs": POLL_S,
-            "min_thread_count": 1,
-            "max_thread_count": 8,
-            "host_cpu_scale_up_ceiling_percent": 50,
-            "cooldown_secs": 0,
-        },
-    )
+    _prepare(fake_backend, threads=1, util=0.95, vcpu=8)
+    run_threshold(fast_threshold, host_cpu_scale_up_ceiling_percent=50)
     wait_for(
         lambda: fake_backend.calls() == [2],
         timeout=10,
@@ -223,10 +180,11 @@ def test_actuation_enforces_controller_bounds_and_host_ceiling(
     assert fake_backend.thread_count() == 2
 
 
-def test_tick_refreshes_evaluates_and_drops_failed_instances(controller, fake_backend):
+def test_tick_refreshes_evaluates_and_drops_failed_instances(
+    controller, fake_backend, run_threshold, fast_threshold
+):
     """One poll refreshes a healthy VM and drops a VM whose snapshot fails."""
-    fake_backend.set_threads(4)
-    fake_backend.set_util(0.95)
+    _prepare(fake_backend, threads=4, util=0.95, vcpu=1)
     fake_backend.add_vm(
         FAILED_VM,
         thread_count=2,
@@ -234,17 +192,7 @@ def test_tick_refreshes_evaluates_and_drops_failed_instances(controller, fake_ba
         per_thread_util=0.95,
         fail_snapshot=True,
     )
-    controller(
-        engine="threshold",
-        engine_config=_fast_engine(),
-        controller_overrides={
-            "scale_poll_secs": POLL_S,
-            "min_thread_count": 1,
-            "max_thread_count": 8,
-            "host_cpu_scale_up_ceiling_percent": 0,
-            "cooldown_secs": 0,
-        },
-    )
+    run_threshold(fast_threshold)
 
     wait_for(
         lambda: _tracked(controller.logs()) == 1
