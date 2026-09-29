@@ -26,5 +26,5 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.toolchain }}-
       - run: sudo apt-get update
-      - run: sudo apt-get install libvirt-dev
+      - run: sudo apt-get install libvirt-dev fuse3 dbus python3-pytest python3-dbus
       - run: make pre-push
