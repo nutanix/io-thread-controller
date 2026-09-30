@@ -16,4 +16,6 @@ pub mod path;
 pub mod per_vm_log;
 pub mod rolling;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test;
 pub mod util;
