@@ -1198,6 +1198,8 @@ mod tests {
         backends::BackendClientError,
         engines::{EngineTickContext, ScalingEngine},
         instance::{InstanceClient, ThreadPoolSnapshot},
+        test::MockDir,
+        test::mockdir::mockdir,
         util::Path,
     };
 
@@ -1229,11 +1231,11 @@ mod tests {
 
     /// Test that actuation will not raise the pool above the VM vCPU
     /// count.
-    #[test(tokio::test)]
-    async fn actuation_enforces_vcpu_cap() {
-        let state_dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    #[tokio::test]
+    async fn actuation_enforces_vcpu_cap(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 0.0,
             ..Default::default()
         };
@@ -1297,11 +1299,13 @@ mod tests {
     // things.
     /// Test that actuation clamps thread targets to configured min/max
     /// and blocks scale-up when host CPU is above the ceiling.
-    #[test(tokio::test)]
-    async fn actuation_enforces_controller_bounds_and_host_ceiling() {
-        let state_dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    #[tokio::test]
+    async fn actuation_enforces_controller_bounds_and_host_ceiling(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             min_thread_count: 2,
             max_thread_count: 3,
             host_cpu_scale_up_ceiling: 0.5,
@@ -1372,11 +1376,11 @@ mod tests {
     /// Test that a performance-validation revert arms cooldown so the next
     /// ordinary up/down cannot immediately undo it (the 4→3→4 flap).
     #[cfg(feature = "threshold-engine")]
-    #[test(tokio::test)]
-    async fn revert_arms_cooldown_blocking_immediate_retry() {
-        let state_dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    #[tokio::test]
+    async fn revert_arms_cooldown_blocking_immediate_retry(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 30.0,
             min_thread_count: 1,
             max_thread_count: 8,
@@ -1434,11 +1438,11 @@ mod tests {
     /// Test that revert itself is not blocked by an existing cooldown, so a
     /// failed validation can still roll the pool back.
     #[cfg(feature = "threshold-engine")]
-    #[test(tokio::test)]
-    async fn revert_bypasses_existing_cooldown() {
-        let state_dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    #[tokio::test]
+    async fn revert_bypasses_existing_cooldown(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 60.0,
             min_thread_count: 1,
             max_thread_count: 8,
@@ -1517,11 +1521,13 @@ mod tests {
 
     /// Test that `set_all` applies a target to every VM and reports how
     /// many failed when some clients error.
+    #[rstest]
     #[tokio::test]
-    async fn test_set_all_attempts_every_vm_and_reports_partial_failure() {
-        let state_dir = tempfile::tempdir().unwrap();
+    async fn test_set_all_attempts_every_vm_and_reports_partial_failure(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             ..Default::default()
         };
         let engine = Box::new(ThresholdEngine::new(ThresholdConfig::default()));
@@ -1644,14 +1650,14 @@ mod tests {
 
     /// Test that discovery sync adds new VMs, retains existing ones,
     /// and removes disappeared ones.
+    #[rstest]
     #[tokio::test]
-    async fn sync_instances_adds_retains_and_removes() {
+    async fn sync_instances_adds_retains_and_removes(#[from(mockdir)] _mockdir: MockDir) {
         let added = Arc::new(AtomicUsize::new(0));
         let removed = Arc::new(AtomicUsize::new(0));
         let evaluated = Arc::new(AtomicUsize::new(0));
-        let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             ..Default::default()
         };
         let mut controller = Controller::new(
@@ -1689,14 +1695,16 @@ mod tests {
 
     /// Test that one tick refreshes state, runs the engine, and drops
     /// instances that fail refresh.
+    #[rstest]
     #[tokio::test]
-    async fn tick_refreshes_evaluates_and_drops_failed_instances() {
+    async fn tick_refreshes_evaluates_and_drops_failed_instances(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let added = Arc::new(AtomicUsize::new(0));
         let removed = Arc::new(AtomicUsize::new(0));
         let evaluated = Arc::new(AtomicUsize::new(0));
-        let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: Path::new("/ownership.json"),
             ..Default::default()
         };
         let mut controller = Controller::new(
