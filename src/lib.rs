@@ -16,6 +16,8 @@ pub mod path;
 pub mod per_vm_log;
 pub mod rolling;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test;
 
 pub(crate) trait ProcessExt {
     fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process>;
