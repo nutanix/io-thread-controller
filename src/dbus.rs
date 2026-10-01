@@ -290,7 +290,22 @@ impl Service {
 /// Spin the D-Bus service on the well-known name / object path
 /// backed by `service` and drive replies from the controller mpsc.
 pub async fn serve(service: Service) -> Result<zbus::Connection, zbus::Error> {
-    let conn = zbus::connection::Builder::system()?
+    serve_with(zbus::connection::Builder::system()?, service).await
+}
+
+/// Serve the controller D-Bus API on an explicit bus address.
+///
+/// Component tests use this to keep the daemon isolated from the host system
+/// bus.
+pub async fn serve_at(address: &str, service: Service) -> Result<zbus::Connection, zbus::Error> {
+    serve_with(zbus::connection::Builder::address(address)?, service).await
+}
+
+async fn serve_with(
+    builder: zbus::connection::Builder<'_>,
+    service: Service,
+) -> Result<zbus::Connection, zbus::Error> {
+    let conn = builder
         .name(DBUS_BUS_NAME)?
         .serve_at(DBUS_OBJECT_PATH, service)?
         .build()
