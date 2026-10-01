@@ -844,7 +844,10 @@ impl Controller {
                 target,
                 "dry-run: would scale"
             );
-            if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_)) {
+            if matches!(
+                action,
+                ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
+            ) {
                 instance.status.write().await.cooldown_until =
                     Some(Instant::now() + Duration::from_secs_f64(self.cfg.cooldown_secs));
             }
@@ -868,7 +871,10 @@ impl Controller {
                 let applied_at = Instant::now();
                 let mut status = instance.status.write().await;
                 status.thread_count = target;
-                if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_)) {
+                if matches!(
+                    action,
+                    ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
+                ) {
                     status.cooldown_until =
                         Some(applied_at + Duration::from_secs_f64(self.cfg.cooldown_secs));
                 }
@@ -1374,6 +1380,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(target.load(Ordering::Relaxed), 2);
+    }
+
+    /// Test that a performance-validation revert arms cooldown so the next
+    /// ordinary up/down cannot immediately undo it (the 4→3→4 flap).
+    #[cfg(feature = "threshold-engine")]
+    #[test(tokio::test)]
+    async fn revert_arms_cooldown_blocking_immediate_retry() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            cooldown_secs: 30.0,
+            min_thread_count: 1,
+            max_thread_count: 8,
+            ..Default::default()
+        };
+        let target = Arc::new(AtomicU32::new(4));
+        let client = VcpuLimitedClient {
+            target: Arc::clone(&target),
+        };
+        let instance = Arc::new(Instance::new(
+            "revert-cooldown".to_string(),
+            Path::new(""),
+            0,
+            client,
+        ));
+        {
+            let mut status = instance.status.write().await;
+            status.thread_count = 4;
+            status.vcpu_count = 8;
+            status.ownership_classification = Some(true);
+        }
+        let mut controller = Controller::new(
+            cfg,
+            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
+        )
+        .unwrap();
+        controller
+            .instances
+            .insert(instance.id.clone(), Arc::clone(&instance));
+
+        let applied = controller
+            .apply_engine_decision(&instance.id, ScaleAction::Revert(3))
+            .await
+            .unwrap();
+        assert!(applied);
+        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert!(instance.status.read().await.cooldown_until.is_some());
+
+        // Immediate re-up must be suppressed by the revert's cooldown.
+        let retried = controller
+            .apply_engine_decision(&instance.id, ScaleAction::Up(4))
+            .await
+            .unwrap();
+        assert!(!retried);
+        assert_eq!(target.load(Ordering::Relaxed), 3);
+
+        let down_retry = controller
+            .apply_engine_decision(&instance.id, ScaleAction::Down(2))
+            .await
+            .unwrap();
+        assert!(!down_retry);
+        assert_eq!(target.load(Ordering::Relaxed), 3);
+    }
+
+    /// Test that revert itself is not blocked by an existing cooldown, so a
+    /// failed validation can still roll the pool back.
+    #[cfg(feature = "threshold-engine")]
+    #[test(tokio::test)]
+    async fn revert_bypasses_existing_cooldown() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            cooldown_secs: 60.0,
+            min_thread_count: 1,
+            max_thread_count: 8,
+            ..Default::default()
+        };
+        let target = Arc::new(AtomicU32::new(3));
+        let client = VcpuLimitedClient {
+            target: Arc::clone(&target),
+        };
+        let instance = Arc::new(Instance::new(
+            "revert-bypass".to_string(),
+            Path::new(""),
+            0,
+            client,
+        ));
+        {
+            let mut status = instance.status.write().await;
+            status.thread_count = 3;
+            status.vcpu_count = 8;
+            status.ownership_classification = Some(true);
+        }
+        let mut controller = Controller::new(
+            cfg,
+            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
+        )
+        .unwrap();
+        controller
+            .instances
+            .insert(instance.id.clone(), Arc::clone(&instance));
+
+        assert!(
+            controller
+                .apply_engine_decision(&instance.id, ScaleAction::Up(4))
+                .await
+                .unwrap()
+        );
+        assert_eq!(target.load(Ordering::Relaxed), 4);
+        assert!(instance.status.read().await.cooldown_until.is_some());
+
+        // Cooldown from the up must not trap the pool at the failed size.
+        assert!(
+            controller
+                .apply_engine_decision(&instance.id, ScaleAction::Revert(3))
+                .await
+                .unwrap()
+        );
+        assert_eq!(target.load(Ordering::Relaxed), 3);
     }
 
     struct BulkClient {
