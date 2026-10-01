@@ -103,6 +103,22 @@ pub struct EngineTickContext {
     pub psi: PsiSample,
     /// Monotonically increasing tick sequence number.
     pub tick_index: u64,
+    /// Controller poll interval in seconds (for operator-facing durations).
+    pub scale_poll_secs: f64,
+}
+
+impl Default for EngineTickContext {
+    fn default() -> Self {
+        Self {
+            now: Instant::now(),
+            min_thread_count: 2,
+            max_thread_count: 8,
+            host_cpu_util: 0.0,
+            psi: PsiSample::default(),
+            tick_index: 0,
+            scale_poll_secs: 10.0,
+        }
+    }
 }
 
 /// One VM's entry in a fleet-wide plan.
@@ -161,6 +177,8 @@ pub enum AppliedOutcome {
         prev_thread_count: u32,
         /// Cumulative backend I/O ops before actuation.
         prev_io_count_total: u64,
+        /// Time when the controller recorded the outcome.
+        applied_at: Instant,
     },
     /// Actuation was intentionally skipped.
     DryRun {
@@ -170,6 +188,8 @@ pub enum AppliedOutcome {
         prev_thread_count: u32,
         /// Cumulative backend I/O ops before the proposal.
         prev_io_count_total: u64,
+        /// Time when the controller recorded the outcome.
+        applied_at: Instant,
     },
     /// A controller guard deliberately prevented backend actuation.
     Blocked {
