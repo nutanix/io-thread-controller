@@ -156,9 +156,34 @@ pub struct BackendRegistration {
     pub build: fn(&Path) -> Result<Box<dyn Backend>, BackendClientError>,
 }
 
+/// Used to keep [`Backend`] dyn-compatible.
+pub trait RegisterableBackend: Backend + Sized + 'static {
+    fn from_config_dir(dir: &Path) -> Result<Self, BackendClientError>;
+}
+
+pub fn build_backend<B: RegisterableBackend>(
+    dir: &Path,
+) -> Result<Box<dyn Backend>, BackendClientError> {
+    Ok(Box::new(B::from_config_dir(dir)?))
+}
+
 /// Linked-in backend factories. Feature-gated modules append themselves here.
 #[distributed_slice]
 pub static BACKENDS: [BackendRegistration] = [..];
+
+/// Register a backend with the plugin system. Expects a name and an
+/// implementor of [`RegisterableBackend`].
+#[macro_export]
+macro_rules! register_backend {
+    ($name:expr, $backend:ty) => {
+        #[linkme::distributed_slice($crate::backends::BACKENDS)]
+        static BACKEND: $crate::backends::BackendRegistration =
+            $crate::backends::BackendRegistration {
+                name: $name,
+                build: $crate::backends::build_backend::<$backend>,
+            };
+    };
+}
 
 /// Fleet-level integration for one backend implementation.
 #[async_trait]

@@ -38,6 +38,30 @@ pub enum EngineError {
     NoSuchEngine(String),
 }
 
+/// This keeps [`ScalingEngine`] dyn-compatible.
+pub trait RegisterableEngine: ScalingEngine + Sized + 'static {
+    fn from_config_dir(dir: &Path) -> Result<Self, EngineError>;
+}
+
+pub fn build_engine<E: RegisterableEngine>(
+    dir: &Path,
+) -> Result<Box<dyn ScalingEngine>, EngineError> {
+    Ok(Box::new(E::from_config_dir(dir)?))
+}
+
+/// Register an engine with the plugin system. Requires a name
+/// and an implementor of [`RegisterableEngine`].
+#[macro_export]
+macro_rules! register_engine {
+    ($name:expr, $engine:ty) => {
+        #[linkme::distributed_slice($crate::engines::ENGINES)]
+        static ENGINE: $crate::engines::EngineRegistration = $crate::engines::EngineRegistration {
+            name: $name,
+            build: $crate::engines::build_engine::<$engine>,
+        };
+    };
+}
+
 /// Scaling operation selected by an engine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleAction {

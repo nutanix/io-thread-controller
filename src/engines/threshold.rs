@@ -14,25 +14,18 @@ use tokio::sync::Mutex;
 use crate::{
     config::{ConfigError, deserialize_percent, serialize_percent},
     engines::{
-        AppliedOutcome, EngineError, EngineRegistration, EngineTickContext, ScaleAction,
+        AppliedOutcome, EngineError, EngineTickContext, RegisterableEngine, ScaleAction,
         ScalingEngine,
     },
     instance::Instance,
+    register_engine,
     util::Path,
 };
 
 /// Registry and configuration name of the threshold engine.
 pub const ENGINE_NAME: &str = "threshold";
 
-fn build_threshold_engine(dir: &Path) -> Result<Box<dyn ScalingEngine>, EngineError> {
-    Ok(Box::new(ThresholdEngine::from_config_dir(dir)?))
-}
-
-#[linkme::distributed_slice(super::ENGINES)]
-static THRESHOLD_ENGINE: EngineRegistration = EngineRegistration {
-    name: ENGINE_NAME,
-    build: build_threshold_engine,
-};
+register_engine!(ENGINE_NAME, ThresholdEngine);
 
 /// Scale, sustain, and post-action validation settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,19 +202,6 @@ impl ThresholdEngine {
         }
     }
 
-    /// Load `threshold.json`, falling back to built-in defaults when absent.
-    pub fn from_config_dir(dir: &Path) -> Result<Self, EngineError> {
-        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
-        // TODO TOCTOU, blindly load and return default if ENOENT
-        let cfg: ThresholdConfig = if path.exists() {
-            crate::config::load_config(path)?
-        } else {
-            ThresholdConfig::default()
-        };
-        cfg.validate()?;
-        Ok(Self::new(cfg))
-    }
-
     /// Return the engine's effective configuration.
     pub fn config(&self) -> &ThresholdConfig {
         &self.cfg
@@ -349,6 +329,21 @@ fn log_scale_decision(
         thr = %format!("{thread_count}->{target}"),
         "threshold scaling decision"
     );
+}
+
+impl RegisterableEngine for ThresholdEngine {
+    /// Load `threshold.json`, falling back to built-in defaults when absent.
+    fn from_config_dir(dir: &Path) -> Result<Self, EngineError> {
+        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
+        // TODO TOCTOU, blindly load and return default if ENOENT
+        let cfg: ThresholdConfig = if path.exists() {
+            crate::config::load_config(path)?
+        } else {
+            ThresholdConfig::default()
+        };
+        cfg.validate()?;
+        Ok(Self::new(cfg))
+    }
 }
 
 #[async_trait]
@@ -498,7 +493,9 @@ mod tests {
     use super::{ThresholdConfig, ThresholdEngine, log_performance_revert};
     use crate::{
         backends::BackendClientError,
-        engines::{AppliedOutcome, EngineTickContext, ScaleAction, ScalingEngine},
+        engines::{
+            AppliedOutcome, EngineTickContext, RegisterableEngine, ScaleAction, ScalingEngine,
+        },
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },

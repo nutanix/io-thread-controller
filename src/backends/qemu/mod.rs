@@ -30,9 +30,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    backends::{Backend, BackendClientError, BackendRegistration},
+    backends::{Backend, BackendClientError, RegisterableBackend},
     config::{ConfigError, load_config},
     instance::{Instance, InstanceClient},
+    register_backend,
     util::Path,
 };
 
@@ -42,15 +43,7 @@ pub mod libvirt;
 
 const BACKEND_NAME: &str = "qemu";
 
-fn build_qemu_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
-    Ok(Box::new(QemuBackend::from_config_dir(dir)?))
-}
-
-#[linkme::distributed_slice(crate::backends::BACKENDS)]
-static QEMU_BACKEND: BackendRegistration = BackendRegistration {
-    name: BACKEND_NAME,
-    build: build_qemu_backend,
-};
+register_backend!(BACKEND_NAME, QemuBackend);
 
 /// QEMU-backend configuration, loaded from
 /// `<backend_config_dir>/qemu.json` at backend construction.
@@ -111,12 +104,6 @@ impl QemuBackend {
         }
     }
 
-    /// Convenience: read `<dir>/qemu.json` (or fall back to
-    /// defaults) and construct.
-    pub fn from_config_dir(dir: &Path) -> Result<Self, ConfigError> {
-        Ok(Self::new(QemuConfig::from_dir(dir)?))
-    }
-
     async fn get_or_open_conn(&self, uri: &str) -> Option<libvirt::LibvirtConn> {
         if let Some(c) = self.conn.lock().unwrap().clone()
             && c.uri == uri
@@ -144,6 +131,14 @@ impl QemuBackend {
 impl Default for QemuBackend {
     fn default() -> Self {
         Self::new(QemuConfig::default())
+    }
+}
+
+impl RegisterableBackend for QemuBackend {
+    /// Convenience: read `<dir>/qemu.json` (or fall back to
+    /// defaults) and construct.
+    fn from_config_dir(dir: &crate::util::Path) -> Result<Self, BackendClientError> {
+        Ok(Self::new(QemuConfig::from_dir(dir)?))
     }
 }
 
