@@ -349,6 +349,7 @@ impl Controller {
                         "thread_count": status.thread_count,
                         "manual_scaling_sticky": status.manual_scaling_sticky,
                         "scaling_allowed": status.scaling_allowed,
+                        "alive": status.alive,
                         "vcpu_count": status.vcpu_count,
                         "per_thread_util": status.per_thread_util,
                         // FIXME omit if status.perf.is_none()?
