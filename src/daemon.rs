@@ -91,7 +91,8 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
     tracing::info!(target: "controller", added, "initial discovery");
 
     let (dbus_tx, mut dbus_rx) = tokio::sync::mpsc::channel(1);
-    let _dbus_connection = dbus::serve(dbus::Service::new(dbus_tx)).await?;
+    let service = dbus::Service::new(dbus_tx);
+    let _dbus_connection = dbus::serve(service).await?;
     let mut inotify_events = setup_inotify(&backends)?;
     let mut poll = interval(Duration::from_secs_f64(cfg.scale_poll_secs));
     poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
