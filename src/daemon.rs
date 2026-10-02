@@ -53,11 +53,6 @@ const INOTIFY_EVENT_BUF_SIZE: usize = 32 * 1024;
 
 /// Run until SIGTERM or SIGINT.
 pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), DaemonError> {
-    tracing::info!(
-        target: "controller",
-        version = VERSION,
-        "io-thread-controller starting"
-    );
     let per_vm_destination = if cfg.enable_per_vm_status_line {
         if cfg.enable_per_vm_main_log {
             "main log".to_string()
