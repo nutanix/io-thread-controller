@@ -367,7 +367,7 @@ impl ScalingEngine for ThresholdEngine {
             (
                 status.per_thread_util,
                 status.thread_count,
-                match status.perf {
+                match &status.perf {
                     Some(perf) => perf.total_io_count(),
                     None => 0,
                 },

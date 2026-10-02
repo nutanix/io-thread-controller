@@ -22,7 +22,7 @@ use crate::{
     config::Config,
     dbus::DbusRequest,
     engines::{AppliedOutcome, BlockedReason, EngineTickContext, ScaleAction, ScalingEngine},
-    instance::{Instance, InstanceStatus},
+    instance::{Instance, InstanceStatus, SnapshotLatency},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
 };
@@ -94,20 +94,6 @@ pub struct SnapshotVm {
     /// Sum of per-worker CPU utilisation, in percent.
     #[serde(default)]
     pub cpu_pct_total: Option<u64>,
-}
-
-/// Serialised latency histogram digest.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SnapshotLatency {
-    /// Median latency in microseconds.
-    pub p50: u64,
-    /// 95th-percentile latency in microseconds.
-    pub p95: u64,
-    /// 99th-percentile latency in microseconds.
-    pub p99: u64,
-    /// Histogram-derived arithmetic mean in microseconds.
-    pub avg: u64,
 }
 
 /// Average, median, and aggregate utilisation across sampled workers.
@@ -300,7 +286,7 @@ impl Controller {
                 let mut vms = Vec::with_capacity(self.instances.len());
                 for (id, instance) in &self.instances {
                     let status = instance.status.read().await;
-                    let (read_io_count, write_io_count, other_io_count) = match status.perf {
+                    let (read_io_count, write_io_count, other_io_count) = match &status.perf {
                         Some(perf) => {
                             (perf.read_io_count, perf.write_io_count, perf.other_io_count)
                         }
@@ -441,8 +427,18 @@ impl Controller {
                 other_iops: s.other_iops,
                 read_bw_bps: s.read_bytes_per_second,
                 write_bw_bps: s.write_bytes_per_second,
-                read_latency_us: None,
-                write_latency_us: None,
+                read_latency_us: s.read_latency_us.map(|latency| SnapshotLatency {
+                    p50: latency.p50,
+                    p95: latency.p95,
+                    p99: latency.p99,
+                    avg: latency.avg,
+                }),
+                write_latency_us: s.write_latency_us.map(|latency| SnapshotLatency {
+                    p50: latency.p50,
+                    p95: latency.p95,
+                    p99: latency.p99,
+                    avg: latency.avg,
+                }),
                 num_queues: None,
                 per_vq_depth: None,
                 qd_total: None,
@@ -547,7 +543,7 @@ impl Controller {
 
         let status = instance.status.read().await;
         let previous_count = status.thread_count;
-        let previous_io_count = match status.perf {
+        let previous_io_count = match &status.perf {
             Some(perf) => perf.total_io_count(),
             None => 0,
         };
