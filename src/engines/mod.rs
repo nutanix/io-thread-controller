@@ -203,6 +203,10 @@ pub trait ScalingEngine: Send + Sync {
     async fn evaluate(&self, instance: &Arc<Instance>, context: &EngineTickContext) -> ScaleAction;
 
     /// Evaluate eligible VMs concurrently and collect one coherent plan.
+    ///
+    /// Sticky or backend-disabled VMs remain visible to fleet-aware engines
+    /// that override this method, but the default per-VM implementation does
+    /// not evaluate them.
     async fn evaluate_fleet(
         &self,
         instances: &[Arc<Instance>],
@@ -212,7 +216,9 @@ pub trait ScalingEngine: Send + Sync {
         // to first look at all the instances first and then make decisions
         join_all(instances.iter().map(|instance| async move {
             let status = instance.status.read().await;
-            if status.manual_scaling_sticky || !status.scaling_allowed {
+            let scaling_allowed = status.scaling_allowed;
+            let sticky = status.manual_scaling_sticky;
+            if sticky || !scaling_allowed {
                 return None;
             }
             Some(InstanceDecision::new(
@@ -297,5 +303,87 @@ mod tests {
             Ok(_) => panic!("expected NoSuchEngine"),
             Err(other) => panic!("expected NoSuchEngine, got {other}"),
         }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::{
+        backends::BackendClientError,
+        instance::{InstanceClient, ThreadPoolSnapshot},
+    };
+
+    struct SnapshotClient;
+
+    #[async_trait]
+    impl InstanceClient for SnapshotClient {
+        async fn set_thread_count(&self, _count: u32) -> Result<(), BackendClientError> {
+            Ok(())
+        }
+
+        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
+            Ok(ThreadPoolSnapshot {
+                thread_count: 1,
+                vcpu_count: 2,
+                perf: None,
+                per_thread_util: Some(0.0),
+            })
+        }
+
+        async fn close(&self) {}
+    }
+
+    struct PerInstanceEngine {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ScalingEngine for PerInstanceEngine {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn dump_config(&self) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+
+        async fn evaluate(
+            &self,
+            _instance: &Arc<Instance>,
+            _context: &EngineTickContext,
+        ) -> ScaleAction {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            ScaleAction::None
+        }
+    }
+
+    fn test_instance(id: &str) -> Arc<Instance> {
+        Arc::new(Instance::new(
+            id.to_string(),
+            Path::new(""),
+            0,
+            SnapshotClient,
+        ))
+    }
+
+    /// Test that default fleet `evaluate` skips ineligible VMs and only
+    /// plans eligible ones.
+    #[tokio::test]
+    async fn default_fleet_evaluation_skips_ineligible_instances() {
+        let engine = PerInstanceEngine {
+            calls: AtomicUsize::new(0),
+        };
+        let first = test_instance("first");
+        let sticky = test_instance("sticky");
+        sticky.status.write().await.manual_scaling_sticky = true;
+
+        let plan = engine
+            .evaluate_fleet(&[first.clone(), sticky], &EngineTickContext::default())
+            .await;
+
+        assert_eq!(engine.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            plan,
+            vec![InstanceDecision::new(&first.id, ScaleAction::None)]
+        );
     }
 }
