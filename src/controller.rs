@@ -1123,7 +1123,7 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
         .join("/")
 }
 
-fn format_latency_cell(latency: Option<crate::instance::LatencySummary>) -> String {
+fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>) -> String {
     latency
         .map(|latency| {
             format!(
