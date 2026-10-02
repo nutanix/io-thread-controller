@@ -72,6 +72,9 @@ pub struct ThresholdConfig {
     /// Complete samples to wait before validating a successful action.
     #[serde(default = "default_scale_validation_sample_polls")]
     pub scale_validation_sample_polls: u32,
+    /// Suppress scale-up after the VM's cgroup reports new throttled CPU time.
+    #[serde(default = "default_true")]
+    pub block_scale_up_when_cgroup_throttled: bool,
 }
 
 fn default_scale_up_threshold() -> f64 {
@@ -95,6 +98,9 @@ fn default_scale_down_revert_drop() -> f64 {
 fn default_scale_validation_sample_polls() -> u32 {
     2
 }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for ThresholdConfig {
     fn default() -> Self {
@@ -105,6 +111,7 @@ impl Default for ThresholdConfig {
             scale_up_min_gain: default_scale_up_min_gain(),
             scale_down_revert_drop: default_scale_down_revert_drop(),
             scale_validation_sample_polls: default_scale_validation_sample_polls(),
+            block_scale_up_when_cgroup_throttled: true,
         }
     }
 }
@@ -362,7 +369,7 @@ impl ScalingEngine for ThresholdEngine {
     }
 
     async fn evaluate(&self, instance: &Arc<Instance>, context: &EngineTickContext) -> ScaleAction {
-        let (per_thread_util, thread_count, iops_total) = {
+        let (per_thread_util, thread_count, iops_total, throttled_recently) = {
             let status = instance.status.read().await;
             (
                 status.per_thread_util,
@@ -371,6 +378,7 @@ impl ScalingEngine for ThresholdEngine {
                     Some(perf) => perf.total_io_count(),
                     None => 0,
                 },
+                status.throttled_usec_delta > 0,
             )
         };
         let down_target =
@@ -404,6 +412,14 @@ impl ScalingEngine for ThresholdEngine {
 
         if thread_count < context.max_thread_count && per_thread_util > self.cfg.scale_up_threshold
         {
+            if self.cfg.block_scale_up_when_cgroup_throttled && throttled_recently {
+                tracing::info!(
+                    target: "controller",
+                    id = %instance.id,
+                    "scale-up suppressed by cgroup CPU throttling"
+                );
+                return ScaleAction::None;
+            }
             // FIXME The min seems redundant given the thread count will always be less than
             // or equal to the max_thread_count here.
             let action = ScaleAction::Up((thread_count + 1).min(context.max_thread_count));
