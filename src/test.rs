@@ -9,6 +9,11 @@ use std::{cell::RefCell, path::PathBuf};
 
 use rstest::fixture;
 
+/// Check two floats are equal barring inherent float imprecision.
+pub fn nearly_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1e-6 * (1.0 + left.abs().max(right.abs()))
+}
+
 thread_local! {
     pub static ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }

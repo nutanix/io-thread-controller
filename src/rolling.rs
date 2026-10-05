@@ -233,12 +233,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// Test that the first sample records a baseline and yields no
     /// rates yet.
     #[test]
-    fn first_sample_only_establishes_baseline() {
+    fn test_rolling_first_sample_only_establishes_baseline() {
         let mut metrics = RollingMetrics::new();
         let t0 = Instant::now();
         metrics.push_from_procfs_delta(t0, 10, 20);
@@ -247,8 +249,10 @@ mod tests {
 
     /// Test that rolling IOPS/CPU-per-IO rates use real elapsed time
     /// between samples.
+    // TODO determine if it's ok to have iops_over with a longer Duration
+    // than wall_ns.
     #[test]
-    fn rates_use_real_elapsed_time() {
+    fn test_rolling_rates_use_real_elapsed_time() {
         let mut metrics = RollingMetrics::new();
         let t0 = Instant::now();
         metrics.push_from_procfs_delta(t0, 10, 20);
@@ -260,14 +264,63 @@ mod tests {
         );
     }
 
-    /// Test that a counter reset drops prior rates and starts a new
-    /// baseline.
-    #[test]
-    fn counter_reset_replaces_baseline() {
-        let mut metrics = RollingMetrics::new();
-        let t0 = Instant::now();
-        metrics.push_from_procfs_delta(t0, 100, 100);
-        metrics.push_from_procfs_delta(t0 + Duration::from_secs(1), 10, 10);
-        assert!(metrics.is_empty());
+    proptest! {
+        #[test]
+        fn test_rolling_first_sample_leaves_the_window_empty(
+            io_ops in any::<u64>(),
+            cpu_ticks in any::<u64>(),
+        ) {
+            let mut metrics = RollingMetrics::new();
+            metrics.push_from_procfs_delta(Instant::now(), io_ops, cpu_ticks);
+            prop_assert!(metrics.is_empty());
+            prop_assert!(metrics.iops_over(Duration::from_secs(60)).is_none());
+            prop_assert!(metrics.cpu_us_per_io_over(Duration::from_secs(60)).is_none());
+        }
+
+        #[test]
+        fn test_rolling_counter_reset_replaces_baseline(
+            io0 in 1u64..,
+            io1 in 1u64..,
+            cpu0 in 1u64..,
+            cpu1 in 1u64..,
+        ) {
+            prop_assume!(io1 < io0 || cpu1 < cpu0);
+
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(2);
+
+            metrics.push_from_procfs_delta(t0, io0, cpu0);
+            metrics.push_from_procfs_delta(t1, io1, cpu1);
+
+            prop_assert!(metrics.is_empty());
+        }
+
+        #[test]
+        fn test_rolling_counter_reset_evicts_only_invalid_samples(
+            io0 in 1u64..,
+            io1 in 1u64..,
+            cpu0 in 1u64..,
+            cpu1 in 1u64..,
+            decrease_io: bool,
+        ) {
+            prop_assume!(io0 < io1 - 1 && cpu0 < cpu1 - 1);
+
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(2);
+            let t2 = t1 + Duration::from_secs(2);
+
+            metrics.push_from_procfs_delta(t0, io0, cpu0);
+            metrics.push_from_procfs_delta(t1, io1, cpu1);
+
+            if decrease_io {
+                metrics.push_from_procfs_delta(t2, io1 - 1, cpu1);
+            } else {
+                metrics.push_from_procfs_delta(t2, io1, cpu1 - 1);
+            }
+
+            prop_assert_eq!(metrics.len(), 1);
+        }
     }
 }
