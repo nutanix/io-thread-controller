@@ -70,10 +70,6 @@ zbus_names = "=4.2.0"
 zvariant = "=5.8.0"
 zvariant_derive = "=5.8.0"
 zvariant_utils = "=3.2.0"
-indexmap = "=2.13.1"
-toml_datetime = "=1.0.1"
-toml_parser = "=1.0.10"
-uds_windows = "=1.1.0"
 
 # latest versions that support Rust 1.84
 json-patch = { version = "3", default-features = false }
