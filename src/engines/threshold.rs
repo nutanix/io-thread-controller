@@ -1005,7 +1005,7 @@ mod tests {
     /// that recovery-window IOPS (not a depressed post-revert blip).
     #[rstest]
     #[tokio::test]
-    async fn failed_scale_up_grace_then_recovery_baseline(#[future] instance: Arc<Instance>) {
+    async fn test_failed_scale_up_grace_then_recovery_baseline(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_up_threshold: 0.8,
@@ -1086,7 +1086,7 @@ mod tests {
     /// Test that scale-down remains allowed during the post-revert up hold.
     #[rstest]
     #[tokio::test]
-    async fn scale_down_allowed_during_post_revert_up_hold(#[future] instance: Arc<Instance>) {
+    async fn test_scale_down_allowed_during_post_revert_up_hold(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_up_threshold: 0.8,
