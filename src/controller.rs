@@ -634,12 +634,10 @@ impl Controller {
         if sticky {
             self.report_blocked_scale(&instance.id, action, BlockedReason::ManualOverride)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
-                    &instance.id,
-                    &format!("event=scale_blocked reason=manual_override action={action}"),
-                );
-            }
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=manual_override action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -653,12 +651,10 @@ impl Controller {
             // FIXME why would an engine even consider an unmanaged VM?
             self.report_blocked_scale(&instance.id, action, BlockedReason::UnmanagedVm)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
-                    &instance.id,
-                    &format!("event=scale_blocked reason=unmanaged_vm action={action}"),
-                );
-            }
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=unmanaged_vm action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -671,15 +667,13 @@ impl Controller {
         if target < self.cfg.min_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetBelowMinimum)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
+            self.log_per_vm_line(
                     &instance.id,
                     &format!(
                         "event=scale_blocked reason=target_below_minimum action={action} target={} minimum={}",
                         target, self.cfg.min_thread_count
                     ),
                 );
-            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -692,15 +686,13 @@ impl Controller {
         if target > self.cfg.max_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsMaximum)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
+            self.log_per_vm_line(
                     &instance.id,
                     &format!(
                         "event=scale_blocked reason=target_exceeds_maximum action={action} target={} maximum={}",
                         target, self.cfg.max_thread_count
                     ),
                 );
-            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -713,15 +705,13 @@ impl Controller {
         if target > vcpu_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsVcpuCount)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
+            self.log_per_vm_line(
                     &instance.id,
                     &format!(
                         "event=scale_blocked reason=target_exceeds_vcpu_count action={action} target={} vcpus={}",
                         target, vcpu_count
                     ),
                 );
-            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -736,12 +726,10 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::Cooldown)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
-                    &instance.id,
-                    &format!("event=scale_blocked reason=cooldown action={action}"),
-                );
-            }
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=cooldown action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -759,15 +747,13 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::HostCpuCeiling)
                 .await;
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
+            self.log_per_vm_line(
                     &instance.id,
                     &format!(
                         "event=scale_blocked reason=host_cpu_ceiling action={action} host_cpu={} ceiling={}",
                         self.host_cpu_util, self.cfg.host_cpu_scale_up_ceiling
                     ),
                 );
-            }
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -779,12 +765,10 @@ impl Controller {
         }
 
         if self.cfg.dry_run {
-            if self.should_log_per_vm_file() {
-                self.log_per_vm_line(
-                    &instance.id,
-                    &format!("event=scale_dry_run action={action} target={target}"),
-                );
-            }
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_dry_run action={action} target={target}"),
+            );
             tracing::info!(
                 target: "controller",
                 vm = %instance.id,
@@ -837,15 +821,13 @@ impl Controller {
                     prev_thread_count = previous_count,
                     prev_io_count_total = previous_io_count
                 );
-                if self.should_log_per_vm_file() {
-                    self.log_per_vm_line(
+                self.log_per_vm_line(
                         &instance.id,
                         &format!(
                             "event=scale_applied action={action} target={} prev_thread_count={} prev_io_count_total={}",
                             target, previous_count, previous_io_count
                         ),
                     );
-                }
                 Ok(true)
             }
             Err(error) => {
@@ -861,15 +843,13 @@ impl Controller {
                     target,
                     error = %error_text
                 );
-                if self.should_log_per_vm_file() {
-                    self.log_per_vm_line(
-                        &instance.id,
-                        &format!(
-                            "event=scale_failed action={action} target={} error={}",
-                            target, error_text
-                        ),
-                    );
-                }
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_failed action={action} target={} error={}",
+                        target, error_text
+                    ),
+                );
                 Ok(false)
             }
         }
@@ -1006,6 +986,9 @@ impl Controller {
     }
 
     fn log_per_vm_line(&self, vm: &str, line: &str) {
+        if !self.should_log_per_vm_file() {
+            return;
+        }
         let path = self.per_vm_log_path(vm);
         let path_text = path.display().to_string();
         if let Some(parent) = path.parent()
