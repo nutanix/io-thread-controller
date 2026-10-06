@@ -68,6 +68,9 @@ pub struct Config {
     /// every tick (default `true`).
     #[serde(default = "default_true")]
     pub enable_per_vm_status_line: bool,
+    /// Also emit each per-VM status record on the main controller target.
+    #[serde(default)]
+    pub enable_per_vm_main_log: bool,
     /// Emit a single aggregate status line summarising every
     /// tracked instance on every tick (default `true`).
     #[serde(default = "default_true")]
@@ -144,6 +147,7 @@ impl Default for Config {
             cooldown_secs: 30.0,
             vm_state_path: Path::new("/run/io-thread-controller/vm-ownership.json"),
             enable_per_vm_status_line: true,
+            enable_per_vm_main_log: false,
             enable_aggregate_status_line: true,
             print_status_header: false,
             max_instances_adjusted_per_poll: default_max_instances_adjusted_per_poll(),
