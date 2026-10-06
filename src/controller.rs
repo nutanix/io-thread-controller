@@ -1143,7 +1143,7 @@ mod tests {
     /// Test that `set_all` applies a target to every VM and reports how
     /// many failed when some clients error.
     #[tokio::test]
-    async fn set_all_attempts_every_vm_and_reports_partial_failure() {
+    async fn test_set_all_attempts_every_vm_and_reports_partial_failure() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
             vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
