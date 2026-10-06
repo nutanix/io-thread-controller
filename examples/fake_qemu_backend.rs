@@ -23,13 +23,6 @@
 //!     shipped controller already speaks.
 //!   * `main` uses the shipped [`ControllerBuilder`] / [`run`] surface: parse
 //!     config, materialise the custom backend, hand everything to the daemon.
-//!
-//! The companion pytest fixture spawns `fake_qemu.py` (a Python
-//! process backing a UNIX socket + HTTP admin surface), then
-//! runs this example against the socket.  The example connects
-//! to that socket and drives the fake service's JSON-lines
-//! protocol -- which is what proves both the library plug-in
-//! path *and* the backend-supplied util path in the controller.
 
 use std::sync::Arc;
 
