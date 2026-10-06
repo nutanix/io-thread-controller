@@ -420,8 +420,8 @@ impl Controller {
     /// Apply a debug-only manual count to every VM known to the daemon.
     ///
     /// The daemon inventory, rather than the consumer's filtered view, defines
-    /// the target set. Every VM is attempted in stable identifier order so
-    /// one rejection does not hide successful updates to other VMs.
+    /// the target set. Every VM is attempted in stable identifier order so that
+    /// there can be a reasonable expectation about the order it gets applied.
     async fn handle_set_all_thread_counts(&self, threads: u32, sticky: bool) -> (u32, String) {
         let mut ids: Vec<_> = self.instances.keys().cloned().collect();
         ids.sort_unstable();
