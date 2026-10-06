@@ -16,6 +16,8 @@ use io_thread_controller::{
     util::Path,
 };
 use thiserror::Error;
+use tracing::instrument;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Error, Debug)]
 enum IoThreadControllerError {
@@ -136,6 +138,7 @@ async fn main() -> Result<(), IoThreadControllerError> {
 }
 
 /// Load defaults only for an absent file; propagate every other open failure.
+#[instrument]
 fn load_daemon_config(path: &Path) -> Result<Config, ConfigError> {
     match std::fs::File::open(path) {
         Ok(_) => load_config(path),
@@ -179,6 +182,7 @@ fn init_logging(filter: &str, style: LogStyle) {
                 .with_target(true)
                 .without_time()
                 .with_env_filter(env_filter)
+                .with_span_events(FmtSpan::NEW) // FIXME elsewhere
                 .finish();
             let _ = tracing::subscriber::set_global_default(subscriber);
         }
