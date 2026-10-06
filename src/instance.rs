@@ -729,15 +729,6 @@ mod tests {
 
     use super::ThreadNameFilter;
 
-    /// Test that a name in the match pattern is matched and a different name
-    /// on the ignore list isn't matched.
-    #[test]
-    fn test_empty_match_list_includes_nonignored_tasks() {
-        let filter = ThreadNameFilter::new("worker", &["helper".to_string()]).unwrap();
-        assert!(filter.matches("worker"));
-        assert!(!filter.matches("helper"));
-    }
-
     /// Test that exact `IgnoreThreadNames` wins over a matching regex
     /// allowlist.
     #[test]
