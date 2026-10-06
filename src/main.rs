@@ -16,7 +16,7 @@ use io_thread_controller::{
     util::Path,
 };
 use thiserror::Error;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Error, Debug)]
@@ -123,6 +123,12 @@ async fn main() -> Result<(), IoThreadControllerError> {
         }
         return Err(IoThreadControllerError::NoSuchBackend(name.to_string()));
     }
+
+    info!(
+        target: "controller",
+        version = VERSION,
+        "io-thread-controller starting"
+    );
 
     let mut cfg = load_daemon_config(&cli.config)?;
     debug!("loaded configuration {}", &cli.config);
