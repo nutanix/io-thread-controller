@@ -361,7 +361,7 @@ mod tests {
     /// Test that `refresh_cgroup_on_each_read` defaults to false in
     /// `Default` and empty JSON.
     #[test]
-    fn cgroup_refresh_defaults_to_false() {
+    fn test_cgroup_refresh_defaults_to_false() {
         assert!(!Config::default().refresh_cgroup_on_each_read);
         let from_json: Config = serde_json::from_str(
             r#"{"engine": "foo", "engine_config_dir": "/engines", "backend_config_dir": "/backends", "scale_poll_secs": 10, "vm_state_path": "/path/to/vm-state"}"#,

@@ -698,7 +698,7 @@ fn read_cgroup_sample(pid: i32) -> Result<CgroupSample, CgroupError> {
         .find(|entry| entry.hierarchy == 0 && entry.controllers.is_empty())
         .map(|entry| entry.pathname)
         .ok_or(CgroupError::MissingFile("cgroup path".to_string()))?;
-    let base = format!("/sys/fs/cgroup{path}");
+    let base = Path::new(&format!("/sys/fs/cgroup{path}"));
 
     let cpu_max = std::fs::read_to_string(format!("{base}/cpu.max"))?;
     let cpu_stat = std::fs::read_to_string(format!("{base}/cpu.stat"))?;
