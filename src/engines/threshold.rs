@@ -153,14 +153,14 @@ struct PendingValidation {
     /// IOPS observed during the pre-scale baseline window.
     baseline_iops: u64,
     /// Start IO count and time of validation window.
-    validation_start: RateWindow,
+    validation_start: IoSample,
     /// Complete observations still required before evaluation.
     polls_remaining: u32,
 }
 
 /// Start of an IOPS-rate measurement window.
 #[derive(Debug, Clone, Copy)]
-struct RateWindow {
+struct IoSample {
     io_count: u64,
     at: Instant,
 }
@@ -178,7 +178,7 @@ struct InstanceState {
     /// Successful action waiting for its performance validation sample.
     pending_validation: Option<PendingValidation>,
     /// Start of the post-settlement baseline window (after last validation).
-    baseline_window_start: Option<RateWindow>,
+    baseline_window_start: Option<IoSample>,
     /// Most recent baseline-window IOPS rate, refreshed each evaluate tick.
     current_baseline_iops: u64,
 }
@@ -201,7 +201,7 @@ impl InstanceState {
         action: ScaleAction,
         previous_thread_count: u32,
         baseline_iops: u64,
-        validation_start: RateWindow,
+        validation_start: IoSample,
         polls_remaining: u32,
     ) {
         self.pending_validation = Some(PendingValidation {
@@ -214,13 +214,13 @@ impl InstanceState {
     }
 
     /// Begin a new baseline window after settlement (or a non-validated scale).
-    fn reset_baseline_window(&mut self, start: RateWindow) {
+    fn reset_baseline_window(&mut self, start: IoSample) {
         self.baseline_window_start = Some(start);
         self.current_baseline_iops = 0;
     }
 
     /// Refresh the baseline-window IOPS rate ending at `end`.
-    fn refresh_baseline_rate(&mut self, end: RateWindow) -> u64 {
+    fn refresh_baseline_rate(&mut self, end: IoSample) -> u64 {
         let rate = match self.baseline_window_start {
             None => {
                 self.baseline_window_start = Some(end);
@@ -234,7 +234,7 @@ impl InstanceState {
 }
 
 /// Average ops/sec between two cumulative counter samples.
-fn iops_rate(start: RateWindow, end: RateWindow) -> u64 {
+fn iops_rate(start: IoSample, end: IoSample) -> u64 {
     let Some(elapsed) = end.at.checked_duration_since(start.at) else {
         return 0;
     };
@@ -468,7 +468,7 @@ impl ScalingEngine for ThresholdEngine {
             .entry(instance.id.clone())
             .or_insert_with(|| InstanceState::new(Arc::clone(instance)));
 
-        let sample = RateWindow {
+        let sample = IoSample {
             io_count: io_count_total,
             at: context.now,
         };
@@ -570,7 +570,7 @@ impl ScalingEngine for ThresholdEngine {
         let Some(instance_state) = state.get_mut(instance_id) else {
             return;
         };
-        let applied = RateWindow {
+        let applied = IoSample {
             io_count: previous_io_count,
             at: applied_at,
         };
