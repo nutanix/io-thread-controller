@@ -553,6 +553,7 @@ impl Controller {
             host_cpu_util: self.host_cpu_util,
             psi: self.psi,
             tick_index: self.tick_index,
+            scale_poll_secs: self.cfg.scale_poll_secs,
         };
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         let refresh_cgroup = self.cfg.refresh_cgroup_on_each_read;
@@ -831,6 +832,7 @@ impl Controller {
                 instance.status.write().await.cooldown_until =
                     Some(Instant::now() + Duration::from_secs_f64(self.cfg.cooldown_secs));
             }
+            let applied_at = Instant::now();
             self.engine
                 .on_applied(
                     &instance.id,
@@ -838,6 +840,7 @@ impl Controller {
                         action,
                         prev_thread_count: previous_count,
                         prev_io_count_total: previous_io_count,
+                        applied_at,
                     },
                 )
                 .await;
@@ -846,11 +849,12 @@ impl Controller {
 
         match instance.client.set_thread_count(target).await {
             Ok(()) => {
+                let applied_at = Instant::now();
                 let mut status = instance.status.write().await;
                 status.thread_count = target;
                 if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_)) {
                     status.cooldown_until =
-                        Some(Instant::now() + Duration::from_secs_f64(self.cfg.cooldown_secs));
+                        Some(applied_at + Duration::from_secs_f64(self.cfg.cooldown_secs));
                 }
                 drop(status);
                 self.engine
@@ -860,6 +864,7 @@ impl Controller {
                             action,
                             prev_thread_count: previous_count,
                             prev_io_count_total: previous_io_count,
+                            applied_at,
                         },
                     )
                     .await;
