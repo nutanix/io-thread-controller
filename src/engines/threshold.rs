@@ -152,10 +152,8 @@ struct PendingValidation {
     baseline_thread_count: u32,
     /// IOPS observed during the pre-scale baseline window.
     baseline_iops: u64,
-    /// Cumulative I/O ops at the start of the validation window.
-    validation_start_io_count: u64,
-    /// Instant marking the start of the validation window.
-    validation_start_at: Instant,
+    /// Start IO count and time of validation window.
+    validation_start: RateWindow,
     /// Complete observations still required before evaluation.
     polls_remaining: u32,
 }
@@ -203,34 +201,32 @@ impl InstanceState {
         action: ScaleAction,
         previous_thread_count: u32,
         baseline_iops: u64,
-        validation_start_io_count: u64,
-        validation_start_at: Instant,
+        validation_start: RateWindow,
         polls_remaining: u32,
     ) {
         self.pending_validation = Some(PendingValidation {
             action,
             baseline_thread_count: previous_thread_count,
             baseline_iops,
-            validation_start_io_count,
-            validation_start_at,
+            validation_start,
             polls_remaining,
         });
     }
 
     /// Begin a new baseline window after settlement (or a non-validated scale).
-    fn reset_baseline_window(&mut self, io_count: u64, at: Instant) {
-        self.baseline_window_start = Some(RateWindow { io_count, at });
+    fn reset_baseline_window(&mut self, start: RateWindow) {
+        self.baseline_window_start = Some(start);
         self.current_baseline_iops = 0;
     }
 
-    /// Refresh the baseline-window IOPS rate ending at `(io_count, now)`.
-    fn refresh_baseline_rate(&mut self, io_count: u64, now: Instant) -> u64 {
+    /// Refresh the baseline-window IOPS rate ending at `end`.
+    fn refresh_baseline_rate(&mut self, end: RateWindow) -> u64 {
         let rate = match self.baseline_window_start {
             None => {
-                self.baseline_window_start = Some(RateWindow { io_count, at: now });
+                self.baseline_window_start = Some(end);
                 0
             }
-            Some(start) => iops_rate(start.io_count, start.at, io_count, now),
+            Some(start) => iops_rate(start, end),
         };
         self.current_baseline_iops = rate;
         rate
@@ -238,15 +234,15 @@ impl InstanceState {
 }
 
 /// Average ops/sec between two cumulative counter samples.
-fn iops_rate(start_io: u64, start_at: Instant, end_io: u64, end_at: Instant) -> u64 {
-    let Some(elapsed) = end_at.checked_duration_since(start_at) else {
+fn iops_rate(start: RateWindow, end: RateWindow) -> u64 {
+    let Some(elapsed) = end.at.checked_duration_since(start.at) else {
         return 0;
     };
     let secs = elapsed.as_secs_f64();
     if secs <= 0.0 {
         return 0;
     }
-    let delta = end_io.saturating_sub(start_io) as f64;
+    let delta = end.io_count.saturating_sub(start.io_count) as f64;
     (delta / secs).round() as u64
 }
 
@@ -472,18 +468,18 @@ impl ScalingEngine for ThresholdEngine {
             .entry(instance.id.clone())
             .or_insert_with(|| InstanceState::new(Arc::clone(instance)));
 
+        let sample = RateWindow {
+            io_count: io_count_total,
+            at: context.now,
+        };
+
         if let Some(mut pending) = instance_state.pending_validation.take() {
             if pending.polls_remaining > 0 {
                 pending.polls_remaining -= 1;
                 instance_state.pending_validation = Some(pending);
                 return ScaleAction::None;
             }
-            let observed_iops = iops_rate(
-                pending.validation_start_io_count,
-                pending.validation_start_at,
-                io_count_total,
-                context.now,
-            );
+            let observed_iops = iops_rate(pending.validation_start, sample);
             let revert_target = self.validation_revert_target(
                 &instance_state.instance.id,
                 thread_count,
@@ -494,14 +490,14 @@ impl ScalingEngine for ThresholdEngine {
             // Whether retained or reverted, the next baseline excludes this
             // validation window. Defer further scaling until the new baseline
             // window has at least one full tick of samples.
-            instance_state.reset_baseline_window(io_count_total, context.now);
+            instance_state.reset_baseline_window(sample);
             if let Some(target) = revert_target {
                 return ScaleAction::Revert(target);
             }
             return ScaleAction::None;
         }
 
-        instance_state.refresh_baseline_rate(io_count_total, context.now);
+        instance_state.refresh_baseline_rate(sample);
 
         if down_target < thread_count {
             instance_state.low_util_polls += 1;
@@ -574,6 +570,10 @@ impl ScalingEngine for ThresholdEngine {
         let Some(instance_state) = state.get_mut(instance_id) else {
             return;
         };
+        let applied = RateWindow {
+            io_count: previous_io_count,
+            at: applied_at,
+        };
         match action {
             ScaleAction::Up(_) if self.cfg.scale_up_min_gain > 0.0 => {
                 // Reset sustain only after the controller accepted the action;
@@ -584,8 +584,7 @@ impl ScalingEngine for ThresholdEngine {
                     action,
                     previous_thread_count,
                     instance_state.current_baseline_iops,
-                    previous_io_count,
-                    applied_at,
+                    applied,
                     self.cfg.scale_validation_sample_polls,
                 );
             }
@@ -597,18 +596,17 @@ impl ScalingEngine for ThresholdEngine {
                     action,
                     previous_thread_count,
                     instance_state.current_baseline_iops,
-                    previous_io_count,
-                    applied_at,
+                    applied,
                     self.cfg.scale_validation_sample_polls,
                 );
             }
             ScaleAction::Up(_) => {
                 instance_state.low_util_polls = 0;
-                instance_state.reset_baseline_window(previous_io_count, applied_at);
+                instance_state.reset_baseline_window(applied);
             }
             ScaleAction::Down(_) => {
                 instance_state.low_util_polls = 0;
-                instance_state.reset_baseline_window(previous_io_count, applied_at);
+                instance_state.reset_baseline_window(applied);
             }
             ScaleAction::None | ScaleAction::Revert(_) => {}
         }
