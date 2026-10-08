@@ -5,7 +5,10 @@
 //
 //! Shared infrastructure for crate unit tests.
 
-use std::{cell::RefCell, path::PathBuf};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+};
 
 use rstest::fixture;
 
@@ -43,7 +46,7 @@ pub(crate) fn override_root(root: impl Into<PathBuf>) -> RootOverride {
 pub(crate) struct MockDir {
     _dir: tempfile::TempDir,
     _root_override: RootOverride,
-    // path: PathBuf,
+    path: PathBuf,
 }
 
 impl MockDir {
@@ -52,14 +55,14 @@ impl MockDir {
 
         Self {
             _root_override: override_root(dir.path()),
-            // path: dir.path().into(),
+            path: dir.path().into(),
             _dir: dir,
         }
     }
 
-    // pub(crate) fn join(&self, path: impl AsRef<Path>) -> PathBuf {
-    // self.path.join(path.as_ref())
-    // }
+    pub(crate) fn join(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.path.join(path.as_ref())
+    }
 }
 
 #[fixture]
