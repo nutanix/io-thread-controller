@@ -19,7 +19,7 @@ use std::{
 use glob;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
     path: std::path::PathBuf,
 }
