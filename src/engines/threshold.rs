@@ -273,11 +273,7 @@ impl InstanceState {
 
     /// Advance grace/recovery state. Returns true while scale-up must stay
     /// blocked.
-    fn advance_post_revert_up_hold(
-        &mut self,
-        sample: RateWindow,
-        recovery_polls: u32,
-    ) -> bool {
+    fn advance_post_revert_up_hold(&mut self, sample: RateWindow, recovery_polls: u32) -> bool {
         let Some(hold) = self.post_revert_up_hold.take() else {
             return false;
         };
@@ -606,10 +602,8 @@ impl ScalingEngine for ThresholdEngine {
             return ScaleAction::None;
         }
 
-        let block_scale_up = instance_state.advance_post_revert_up_hold(
-            sample,
-            self.cfg.post_revert_up_recovery_polls,
-        );
+        let block_scale_up = instance_state
+            .advance_post_revert_up_hold(sample, self.cfg.post_revert_up_recovery_polls);
         // Grace ignores metrics; recovery updates the rate inside advance.
         // Once the hold ends (or if there was none), refresh the normal baseline.
         if !block_scale_up {
