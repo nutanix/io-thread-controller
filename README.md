@@ -144,6 +144,13 @@ through `virDomainQemuMonitorCommand`. Its configuration is loaded from
 `backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
 or changed through the backend CLI and D-Bus operations.
 
+## Cgroup throttling
+
+With `refresh_cgroup_on_each_read` enabled, each refresh reads the VM process's
+cgroup v2 `cpu.max` and `cpu.stat`. The threshold engine setting
+`block_scale_up_when_cgroup_throttled` suppresses scale-up when
+`throttled_usec` increased since the preceding sample.
+
 ## Experimental PSI monitoring
 
 With `experimental_psi_monitoring` enabled, each tick samples the CPU, I/O, and
