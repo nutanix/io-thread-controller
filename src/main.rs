@@ -11,7 +11,7 @@ use clap::{self, CommandFactory, FromArgMatches, Parser};
 use io_thread_controller::{
     backends::BackendClientError,
     backends::registered_backends,
-    config::{Config, ConfigError, dump_default_config, load_config, validate_config},
+    config::{Config, ConfigError, dump_default_config, load_json_with_includes, validate_config},
     daemon::{DaemonError, VERSION, run},
     util::Path,
 };
@@ -138,7 +138,7 @@ async fn main() -> Result<(), IoThreadControllerError> {
 /// Load defaults only for an absent file; propagate every other open failure.
 fn load_daemon_config(path: &Path) -> Result<Config, ConfigError> {
     match std::fs::File::open(path) {
-        Ok(_) => load_config(path),
+        Ok(_) => load_json_with_includes(path),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Config::default()),
         Err(error) => Err(error)?,
     }

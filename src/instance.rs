@@ -10,10 +10,15 @@
 //! A [`crate::backends::Backend`] is the fleet-level adapter that owns
 //! backend-wide configuration and discovers zero or more such records.
 
-use std::{collections::HashMap, fmt, sync::LazyLock, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::LazyLock,
+    time::Instant,
+};
 
 use async_trait::async_trait;
-use procfs::process::Process;
+use procfs::{ProcError, process::Process};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -131,6 +136,29 @@ pub struct Instance {
     pub status: RwLock<InstanceStatus>,
 }
 
+#[derive(Debug, Error)]
+pub enum CgroupError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error("invalid value: {0}")]
+    InvalidValue(String),
+
+    #[error("missing file `{0}`")]
+    MissingFile(String),
+
+    #[error("missing field `{0}`")]
+    MissingField(String),
+
+    #[error(transparent)]
+    ParseFloat(#[from] std::num::ParseFloatError),
+
+    #[error(transparent)]
+    ParseInt(#[from] std::num::ParseIntError),
+
+    #[error(transparent)]
+    Proc(#[from] ProcError),
+}
 #[derive(Debug, thiserror::Error)]
 enum CpuSampleError {
     #[error("no usable backend task CPU samples")]
@@ -176,9 +204,12 @@ impl Instance {
 
     /// Refresh one VM and mark its client broken on failure.
     #[tracing::instrument(skip(self), fields(id = %self.id))]
-    pub async fn refresh_state(&self) -> bool {
+    pub async fn refresh_state(&self, refresh_cgroup: bool) -> bool {
         match self.client.get_thread_pool_snapshot().await {
-            Ok(snapshot) => self.apply_thread_pool_snapshot(snapshot).await,
+            Ok(snapshot) => {
+                self.apply_thread_pool_snapshot(snapshot, refresh_cgroup)
+                    .await
+            }
             Err(error) => {
                 tracing::warn!(
                     target: "controller",
@@ -193,7 +224,11 @@ impl Instance {
     }
 
     /// Apply one successful thread-pool snapshot to this instance.
-    async fn apply_thread_pool_snapshot(&self, snapshot: ThreadPoolSnapshot) -> bool {
+    async fn apply_thread_pool_snapshot(
+        &self,
+        snapshot: ThreadPoolSnapshot,
+        refresh_cgroup: bool,
+    ) -> bool {
         let cpu = if snapshot.per_thread_util.is_none() {
             match read_cpu_sample(self.pid, &self.thread_name_filter) {
                 Ok(sample) => Some(sample),
@@ -208,6 +243,12 @@ impl Instance {
             }
         } else {
             None
+        };
+        let previous_cgroup = self.status.read().await.cgroup;
+        let cgroup = if refresh_cgroup || previous_cgroup.is_none() {
+            read_cgroup_sample(self.pid).ok()
+        } else {
+            previous_cgroup
         };
         let now = Instant::now();
         let mut status = self.status.write().await;
@@ -266,6 +307,13 @@ impl Instance {
                 .push_from_procfs_delta(now, io_ops_total, current.cpu_ticks);
         }
         status.last_cpu_sample = if backend_util.is_none() { cpu } else { None };
+        status.throttled_usec_delta = match (status.cgroup, cgroup) {
+            (Some(previous), Some(current)) => current
+                .throttled_usec
+                .saturating_sub(previous.throttled_usec),
+            _ => 0,
+        };
+        status.cgroup = cgroup;
         true
     }
 
@@ -324,26 +372,48 @@ impl fmt::Display for Instance {
 #[derive(Debug, Default, Clone)]
 pub struct ThreadNameFilter {
     match_regex: Option<Regex>,
+    ignored_names: HashSet<String>,
 }
 
 impl ThreadNameFilter {
-    /// Compile task-name patterns. An empty list includes every task.
-    pub fn new(pattern: &str) -> Result<Self, InstanceError> {
+    /// Compile match patterns and collect exact names to ignore.
+    pub fn new(pattern: &str, ignored_names: &[String]) -> Result<Self, InstanceError> {
         let match_regex = if pattern.is_empty() {
             None
         } else {
             let pattern = format!("(?:{pattern})");
             Some(Regex::new(&pattern)?)
         };
-        Ok(Self { match_regex })
+        Ok(Self {
+            match_regex,
+            ignored_names: ignored_names.iter().cloned().collect(),
+        })
     }
 
     /// Return whether a task name belongs in CPU sampling.
+    ///
+    /// An empty match pattern (`None`) includes every name that is
+    /// not in `ignored_names`.
     pub fn matches(&self, task_name: &str) -> bool {
+        if self.ignored_names.contains(task_name) {
+            return false;
+        }
         self.match_regex
             .as_ref()
-            .is_none_or(|regex| regex.is_match(task_name))
+            .map(|regex| regex.is_match(task_name))
+            .unwrap_or(true)
     }
+}
+
+/// Cgroup v2 CPU quota and cumulative throttle counters.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CgroupSample {
+    /// `cpu.max` quota as a fraction of one core, or infinity for `max`.
+    pub quota_cores: f64,
+    /// Cumulative number of throttling periods from `cpu.stat`.
+    pub nr_throttled: u64,
+    /// Cumulative throttled CPU time in microseconds.
+    pub throttled_usec: u64,
 }
 
 /// Most recent mutable state for one VM.
@@ -378,6 +448,10 @@ pub struct InstanceStatus {
     pub per_worker_util: Vec<f64>,
     /// Sorted names from the latest worker sample, for roster-change logging.
     pub last_worker_names: Option<Vec<String>>,
+    /// Latest cgroup v2 CPU quota and throttle counters.
+    pub cgroup: Option<CgroupSample>,
+    /// Increase in throttled CPU time since the preceding cgroup sample.
+    pub throttled_usec_delta: u64,
     /// Bounded 1m/5m/15m I/O and CPU history.
     pub rolling: RollingMetrics,
     /// Time of the previous backend performance snapshot.
@@ -614,6 +688,59 @@ fn read_cpu_sample(
     })
 }
 
+/// Read cgroup v2 CPU quota and throttle counters for `pid`.
+fn read_cgroup_sample(pid: i32) -> Result<CgroupSample, CgroupError> {
+    let process = Process::new(pid)?;
+    let cgroups = process.cgroups()?;
+    let path = cgroups
+        .0
+        .into_iter()
+        .find(|entry| entry.hierarchy == 0 && entry.controllers.is_empty())
+        .map(|entry| entry.pathname)
+        .ok_or(CgroupError::MissingFile("cgroup path".to_string()))?;
+    let base = Path::new(&format!("/sys/fs/cgroup{path}"));
+
+    let cpu_max = std::fs::read_to_string(format!("{base}/cpu.max"))?;
+    let cpu_stat = std::fs::read_to_string(format!("{base}/cpu.stat"))?;
+
+    let mut max_parts = cpu_max.split_whitespace();
+    let quota = max_parts
+        .next()
+        .ok_or(CgroupError::MissingField("quota".to_string()))?;
+    let period = max_parts
+        .next()
+        .ok_or(CgroupError::MissingField("period".to_string()))?
+        .parse::<f64>()?;
+    if period <= 0.0 {
+        return Err(CgroupError::InvalidValue(
+            "cpu.max period must be positive".to_string(),
+        ));
+    }
+    let quota_cores = if quota == "max" {
+        f64::INFINITY
+    } else {
+        quota.parse::<f64>()? / period
+    };
+
+    let mut sample = CgroupSample {
+        quota_cores,
+        ..Default::default()
+    };
+    for line in cpu_stat.lines() {
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next()) {
+            (Some("nr_throttled"), Some(value)) => {
+                sample.nr_throttled = value.parse()?;
+            }
+            (Some("throttled_usec"), Some(value)) => {
+                sample.throttled_usec = value.parse()?;
+            }
+            _ => {}
+        }
+    }
+    Ok(sample)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -677,7 +804,7 @@ mod tests {
             7,
             SnapshotClient { threads: 3 },
         );
-        assert!(instance.refresh_state().await);
+        assert!(instance.refresh_state(false).await);
         let status = instance.status.read().await;
         assert!(status.alive);
         assert_eq!(status.thread_count, 3);
@@ -696,7 +823,7 @@ mod tests {
                 closed: Arc::clone(&closed),
             },
         );
-        assert!(!instance.refresh_state().await);
+        assert!(!instance.refresh_state(false).await);
         let status = instance.status.read().await;
         assert!(!status.alive);
         assert!(closed.load(Ordering::Relaxed));
@@ -715,6 +842,18 @@ mod tests {
     }
 
     use super::{TaskCpuSample, compute_per_worker_util};
+
+    use super::ThreadNameFilter;
+
+    /// Test that exact `IgnoreThreadNames` wins over a matching regex
+    /// allowlist.
+    #[test]
+    fn test_exact_ignore_takes_precedence_over_regex_match() {
+        let filter = ThreadNameFilter::new("worker[0-9]+", &["worker0".to_string()]).unwrap();
+        assert!(!filter.matches("worker0"));
+        assert!(filter.matches("worker1-helper"));
+        assert!(!filter.matches("backend-main"));
+    }
 
     fn task(tid: i32, name: &str, cpu_ticks: u64) -> TaskCpuSample {
         TaskCpuSample {

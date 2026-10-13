@@ -7,12 +7,14 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fs::{OpenOptions, create_dir_all},
+    io::Write,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use futures_util::future::join_all;
-use procfs::{CurrentSI, ProcError};
+use procfs::{CpuPressure, Current, CurrentSI, IoPressure, MemoryPressure, ProcError};
 use serde::{Deserialize, Serialize};
 use statistical::median;
 use thiserror::Error;
@@ -21,10 +23,13 @@ use crate::{
     backends::{BackendClientError, IoThreadProperties, VqMapping},
     config::Config,
     dbus::DbusRequest,
-    engines::{AppliedOutcome, BlockedReason, EngineTickContext, ScaleAction, ScalingEngine},
-    instance::{Instance, InstanceStatus, SnapshotLatency},
+    engines::{
+        AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
+    },
+    instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
+    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -132,6 +137,12 @@ pub enum ControllerError {
     BackendClient(#[from] BackendClientError),
 
     #[error(transparent)]
+    Cgroup(#[from] CgroupError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
     Proc(#[from] ProcError),
 
     #[error(transparent)]
@@ -151,6 +162,7 @@ const fn from_mins(minutes: u64) -> Duration {
 
 /// Rolling windows displayed in uptime-style status fields.
 const STATUS_WINDOWS: [Duration; 3] = [from_mins(1), from_mins(5), from_mins(15)];
+const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";
 
 /// Host-wide cumulative CPU counters from `/proc/stat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -179,12 +191,18 @@ pub struct Controller {
     /// and decide.
     // FIXME Instance probably doesn't need to be an Arc.
     pub instances: HashMap<String, Arc<Instance>>,
+    /// Per-VM log file destination when per-VM main log is disabled.
+    per_vm_log_dir: Path,
+    /// VM IDs for which per-VM log I/O failures were already reported.
+    per_vm_log_io_error_warned: std::sync::Mutex<HashSet<String>>,
     /// Monotonically increasing tick sequence.
     pub tick_index: u64,
     /// Previous host CPU sample.
     last_host_cpu: Option<HostCpuSample>,
     /// Fraction of host CPU consumed since the previous tick.
     host_cpu_util: f64,
+    /// Latest host pressure-stall snapshot.
+    psi: PsiSample,
 }
 
 impl Controller {
@@ -198,9 +216,12 @@ impl Controller {
             vm_state_store,
             vm_ownership,
             instances: HashMap::new(),
+            per_vm_log_dir: Path::from(PER_VM_LOG_DIR),
+            per_vm_log_io_error_warned: std::sync::Mutex::new(HashSet::new()),
             tick_index: 0,
             last_host_cpu: None,
             host_cpu_util: 0.0,
+            psi: PsiSample::default(),
         })
     }
 
@@ -259,6 +280,14 @@ impl Controller {
                     .handle_set_thread_count(&vm, threads, sticky)
                     .await
                     .map_err(|error| error.to_string());
+                let _ = reply.send(result);
+            }
+            DbusRequest::SetAllThreadCounts {
+                threads,
+                sticky,
+                reply,
+            } => {
+                let result = self.handle_set_all_thread_counts(threads, sticky).await;
                 let _ = reply.send(result);
             }
             DbusRequest::GetSnapshot { reply } => {
@@ -398,6 +427,36 @@ impl Controller {
         Ok(())
     }
 
+    /// Apply a debug-only manual count to every VM known to the daemon.
+    ///
+    /// The daemon inventory, rather than the consumer's filtered view, defines
+    /// the target set. Every VM is attempted in stable identifier order so that
+    /// there can be a reasonable expectation about the order it gets applied.
+    async fn handle_set_all_thread_counts(&self, threads: u32, sticky: bool) -> (u32, String) {
+        let mut ids: Vec<_> = self.instances.keys().cloned().collect();
+        ids.sort_unstable();
+        let attempted = ids.len();
+        let mut succeeded = 0usize;
+        let mut failures = Vec::new();
+        for id in ids {
+            match self.handle_set_thread_count(&id, threads, sticky).await {
+                Ok(()) => succeeded += 1,
+                Err(error) => failures.push(format!("{id}: {error}")),
+            }
+        }
+
+        let failed = failures.len();
+        let mut summary = format!(
+            "set thread count to {threads}{} on {succeeded}/{attempted} VMs",
+            if sticky { " (sticky)" } else { "" }
+        );
+        if !failures.is_empty() {
+            summary.push_str("; failures: ");
+            summary.push_str(&failures.join("; "));
+        }
+        (u32::try_from(failed).unwrap_or(u32::MAX), summary)
+    }
+
     /// Assemble the machine-readable fleet snapshot.
     async fn handle_get_snapshot(&self) -> String {
         let mut payload = SnapshotPayload {
@@ -461,15 +520,25 @@ impl Controller {
             }
             self.last_host_cpu = Some(current);
         }
+        if self.cfg.experimental_psi_monitoring {
+            self.psi = read_psi_sample();
+        }
         let context = EngineTickContext {
             now: Instant::now(),
             min_thread_count: self.cfg.min_thread_count,
             max_thread_count: self.cfg.max_thread_count,
             host_cpu_util: self.host_cpu_util,
+            psi: self.psi,
             tick_index: self.tick_index,
         };
         let fleet: Vec<_> = self.instances.values().cloned().collect();
-        let refreshes = join_all(fleet.iter().map(|instance| instance.refresh_state())).await;
+        let refresh_cgroup = self.cfg.refresh_cgroup_on_each_read;
+        let refreshes = join_all(
+            fleet
+                .iter()
+                .map(|instance| instance.refresh_state(refresh_cgroup)),
+        )
+        .await;
 
         for id in fleet
             .iter()
@@ -485,11 +554,48 @@ impl Controller {
 
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         self.persist_new_classifications(&fleet).await?;
-        let plan = self.engine.evaluate_fleet(&fleet, &context).await;
-        for item in plan {
+        let decisions = self.engine.evaluate_fleet(&fleet, &context).await;
+        let mut planned_ids = HashSet::new();
+        let mut plan = Vec::new();
+        for (sequence, item) in decisions.into_iter().enumerate() {
+            if !planned_ids.insert(item.instance_id.clone()) {
+                tracing::warn!(
+                    target: "controller",
+                    vm = %item.instance_id,
+                    "engine returned duplicate decisions; keeping the first"
+                );
+                continue;
+            }
+            let Some(instance) = self.instances.get(&item.instance_id) else {
+                tracing::warn!(
+                    target: "controller",
+                    vm = %item.instance_id,
+                    "engine returned a decision for an unknown VM"
+                );
+                continue;
+            };
             let action = item.decision;
-            self.apply_engine_decision(&item.instance_id, action)
-                .await?;
+            let Some(target) = action.target() else {
+                continue;
+            };
+            let status = instance.status.read().await;
+            let current = status.thread_count;
+            if target == current {
+                continue;
+            }
+            plan.push((target > current, sequence, item.instance_id, action));
+        }
+        plan.sort_by_key(|(is_up, sequence, _, _)| (*is_up, *sequence));
+
+        let cap = self.cfg.max_instances_adjusted_per_poll as usize;
+        let mut adjusted = 0usize;
+        for (_, _, instance_id, action) in plan {
+            if cap > 0 && adjusted >= cap {
+                continue;
+            }
+            if self.apply_engine_decision(&instance_id, action).await? {
+                adjusted += 1;
+            }
         }
         self.emit_status_lines().await;
         Ok(())
@@ -533,12 +639,12 @@ impl Controller {
         &self,
         instance_id: &str,
         action: ScaleAction,
-    ) -> Result<(), ControllerError> {
+    ) -> Result<bool, ControllerError> {
         let Some(target) = action.target() else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(instance) = self.instances.get(instance_id) else {
-            return Ok(());
+            return Ok(false);
         };
 
         let status = instance.status.read().await;
@@ -556,6 +662,10 @@ impl Controller {
         if sticky {
             self.report_blocked_scale(&instance.id, action, BlockedReason::ManualOverride)
                 .await;
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=manual_override action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -563,12 +673,16 @@ impl Controller {
                 vm = %instance.id,
                 action = %action
             );
-            return Ok(());
+            return Ok(false);
         }
         if !scaling_allowed {
             // FIXME why would an engine even consider an unmanaged VM?
             self.report_blocked_scale(&instance.id, action, BlockedReason::UnmanagedVm)
                 .await;
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=unmanaged_vm action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -576,11 +690,18 @@ impl Controller {
                 vm = %instance.id,
                 action = %action
             );
-            return Ok(());
+            return Ok(false);
         }
         if target < self.cfg.min_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetBelowMinimum)
                 .await;
+            self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_below_minimum action={action} target={} minimum={}",
+                        target, self.cfg.min_thread_count
+                    ),
+                );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -588,11 +709,18 @@ impl Controller {
                 minimum = self.cfg.min_thread_count,
                 "automatic scaling suppressed by controller minimum"
             );
-            return Ok(());
+            return Ok(false);
         }
         if target > self.cfg.max_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsMaximum)
                 .await;
+            self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_exceeds_maximum action={action} target={} maximum={}",
+                        target, self.cfg.max_thread_count
+                    ),
+                );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -600,11 +728,18 @@ impl Controller {
                 maximum = self.cfg.max_thread_count,
                 "automatic scaling suppressed by controller maximum"
             );
-            return Ok(());
+            return Ok(false);
         }
         if target > vcpu_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsVcpuCount)
                 .await;
+            self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=target_exceeds_vcpu_count action={action} target={} vcpus={}",
+                        target, vcpu_count
+                    ),
+                );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -612,19 +747,23 @@ impl Controller {
                 vcpus = vcpu_count,
                 "automatic scaling suppressed by vCPU cap"
             );
-            return Ok(());
+            return Ok(false);
         }
         if matches!(action, ScaleAction::Up(_) | ScaleAction::Down(_))
             && cooldown_until.is_some_and(|until| Instant::now() < until)
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::Cooldown)
                 .await;
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_blocked reason=cooldown action={action}"),
+            );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
                 "automatic scaling suppressed by cooldown"
             );
-            return Ok(());
+            return Ok(false);
         }
         // FIXME This condition allows ScaleAction::Down(...) with an increasing target
         // to bypass the ceiling. This check should be removed or Down(...) should be
@@ -636,6 +775,13 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::HostCpuCeiling)
                 .await;
+            self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_blocked reason=host_cpu_ceiling action={action} host_cpu={} ceiling={}",
+                        self.host_cpu_util, self.cfg.host_cpu_scale_up_ceiling
+                    ),
+                );
             tracing::info!(
                 target: "controller",
                 id = %instance.id,
@@ -643,10 +789,14 @@ impl Controller {
                 ceiling = self.cfg.host_cpu_scale_up_ceiling,
                 "automatic scaling suppressed by host CPU guard"
             );
-            return Ok(());
+            return Ok(false);
         }
 
         if self.cfg.dry_run {
+            self.log_per_vm_line(
+                &instance.id,
+                &format!("event=scale_dry_run action={action} target={target}"),
+            );
             tracing::info!(
                 target: "controller",
                 vm = %instance.id,
@@ -668,7 +818,7 @@ impl Controller {
                     },
                 )
                 .await;
-            return Ok(());
+            return Ok(true);
         }
 
         match instance.client.set_thread_count(target).await {
@@ -699,6 +849,14 @@ impl Controller {
                     prev_thread_count = previous_count,
                     prev_io_count_total = previous_io_count
                 );
+                self.log_per_vm_line(
+                        &instance.id,
+                        &format!(
+                            "event=scale_applied action={action} target={} prev_thread_count={} prev_io_count_total={}",
+                            target, previous_count, previous_io_count
+                        ),
+                    );
+                Ok(true)
             }
             Err(error) => {
                 let error_text = error.to_string();
@@ -713,9 +871,16 @@ impl Controller {
                     target,
                     error = %error_text
                 );
+                self.log_per_vm_line(
+                    &instance.id,
+                    &format!(
+                        "event=scale_failed action={action} target={} error={}",
+                        target, error_text
+                    ),
+                );
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     /// Report a controller-blocked action to the proposing engine.
@@ -746,8 +911,13 @@ impl Controller {
                     aggregate_has_iops[index] = true;
                 }
             }
-            if self.cfg.enable_per_vm_status_line {
-                Self::emit_instance_status(instance, &status, iops_windows);
+            if self.cfg.enable_per_vm_status_line && self.cfg.enable_per_vm_main_log {
+                Self::emit_instance_status_main(instance, &status, iops_windows);
+            } else if self.cfg.enable_per_vm_status_line {
+                self.emit_instance_status_file(instance, &status, iops_windows);
+            }
+            if self.cfg.enable_per_vm_main_log {
+                Self::emit_instance_status_main(instance, &status, iops_windows);
             }
             total_threads += u64::from(status.thread_count);
         }
@@ -765,36 +935,157 @@ impl Controller {
         }
     }
 
-    /// Emit one uptime-style per-VM status record.
-    fn emit_instance_status(
+    fn format_instance_status_line(
+        instance: &Instance,
+        status: &InstanceStatus,
+        iops_windows: [Option<u64>; 3],
+    ) -> String {
+        let cpu = compute_cpu_stats(status);
+        format!(
+            "event=vm_status vm={} thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
+            instance,
+            status.thread_count,
+            status.read_iops,
+            status.write_iops,
+            status.other_iops,
+            format_optional_cells(iops_windows),
+            status.read_bytes_per_second / 1_000_000,
+            status.write_bytes_per_second / 1_000_000,
+            cpu.avg_pct,
+            cpu.median_pct,
+            cpu.total_pct,
+            format_latency_cell(status.read_latency_us),
+            format_latency_cell(status.write_latency_us),
+            format_1_5_15(&status.rolling, |rolling, window| rolling
+                .cpu_us_per_io_over(window)),
+        )
+    }
+
+    fn emit_instance_status_file(
+        &self,
         instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) {
-        let cpu = compute_cpu_stats(status);
-        tracing::info!(
-            target: "status",
-            vm = instance.to_string(),
-            thr = status.thread_count,
-            iops = %format!(
-                "{}/{}/{}",
-                status.read_iops,
-                status.write_iops,
-                status.other_iops
-            ),
-            iops_1_5_15m = %format_optional_cells(iops_windows),
-            bw_mb_s = %format!(
-                "{}/{}",
-                status.read_bytes_per_second / 1_000_000,
-                status.write_bytes_per_second / 1_000_000
-            ),
-            cpu = %format!("{}/{}/{}", cpu.avg_pct, cpu.median_pct, cpu.total_pct),
-            cpu_us_per_io_1_5_15m =
-                %format_1_5_15(&status.rolling, |rolling, window| {
-                    rolling.cpu_us_per_io_over(window)
-                }),
-            ""
+        self.log_per_vm_line(
+            &instance.id,
+            &Self::format_instance_status_line(instance, status, iops_windows),
         );
+    }
+
+    /// Emit one per-VM status record on the main controller target.
+    fn emit_instance_status_main(
+        instance: &Instance,
+        status: &InstanceStatus,
+        iops_windows: [Option<u64>; 3],
+    ) {
+        tracing::info!(
+            target: "controller",
+            event = "vm_status",
+            vm = instance.to_string(),
+            thread_count = status.thread_count,
+            read_iops = status.read_iops,
+            write_iops = status.write_iops,
+            other_iops = status.other_iops,
+            iops_1_5_15m = %format_optional_cells(iops_windows),
+            read_bw_mb_s = status.read_bytes_per_second / 1_000_000,
+            write_bw_mb_s = status.write_bytes_per_second / 1_000_000,
+            read_latency_us = %format_latency_cell(status.read_latency_us),
+            write_latency_us = %format_latency_cell(status.write_latency_us)
+        );
+    }
+
+    fn should_log_per_vm_file(&self) -> bool {
+        self.cfg.enable_per_vm_status_line && !self.cfg.enable_per_vm_main_log
+    }
+
+    fn per_vm_log_path(&self, vm: &str) -> Path {
+        let name: String = vm
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        Path::new(&self.per_vm_log_dir.join(format!("{name}.log")))
+    }
+
+    fn log_per_vm_line(&self, vm: &str, line: &str) {
+        if !self.should_log_per_vm_file() {
+            return;
+        }
+        let path = self.per_vm_log_path(vm);
+        let path_text = path.display().to_string();
+        if let Some(parent) = path.parent()
+            && let Err(error) = create_dir_all(parent)
+        {
+            let mut warned = self
+                .per_vm_log_io_error_warned
+                .lock()
+                .expect("lock poisoned");
+            if warned.insert(vm.to_string()) {
+                tracing::warn!(
+                    target: "controller",
+                    vm,
+                    path = %path_text,
+                    %error,
+                    "failed to create per-VM log directory"
+                );
+            }
+            return;
+        }
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(mut file) => {
+                if let Err(error) = writeln!(file, "{line}") {
+                    let mut warned = self
+                        .per_vm_log_io_error_warned
+                        .lock()
+                        .expect("lock poisoned");
+                    if warned.insert(vm.to_string()) {
+                        tracing::warn!(
+                            target: "controller",
+                            vm,
+                            path = %path_text,
+                            %error,
+                            "failed to write per-VM log"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                let mut warned = self
+                    .per_vm_log_io_error_warned
+                    .lock()
+                    .expect("lock poisoned");
+                if warned.insert(vm.to_string()) {
+                    tracing::warn!(
+                        target: "controller",
+                        vm,
+                        path = %path_text,
+                        %error,
+                        "failed to open per-VM log"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Read CPU, I/O, and memory pressure; unavailable values become zero.
+fn read_psi_sample() -> PsiSample {
+    PsiSample {
+        cpu_some_avg10: CpuPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
+        io_some_avg10: IoPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
+        memory_some_avg10: MemoryPressure::current()
+            .map(|pressure| pressure.some.avg10 as f64)
+            .unwrap_or(0.0),
     }
 }
 
@@ -841,6 +1132,17 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>) -> String {
+    latency
+        .map(|latency| {
+            format!(
+                "{}/{}/{}/{}",
+                latency.p50, latency.p95, latency.p99, latency.avg
+            )
+        })
+        .unwrap_or_else(|| "-".to_string())
 }
 
 #[cfg(test)]
@@ -1027,6 +1329,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(target.load(Ordering::Relaxed), 2);
+    }
+
+    struct BulkClient {
+        fail: bool,
+        target: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl InstanceClient for BulkClient {
+        async fn set_thread_count(&self, n: u32) -> Result<(), BackendClientError> {
+            if self.fail {
+                return Err(BackendClientError::Protocol("injected failure".to_string()));
+            }
+            self.target.store(n, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
+            Ok(ThreadPoolSnapshot {
+                thread_count: self.target.load(Ordering::Relaxed),
+                vcpu_count: 16,
+                perf: None,
+                per_thread_util: Some(0.0),
+            })
+        }
+
+        async fn close(&self) {}
+    }
+
+    /// Test that `set_all` applies a target to every VM and reports how
+    /// many failed when some clients error.
+    #[tokio::test]
+    async fn test_set_all_attempts_every_vm_and_reports_partial_failure() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            ..Default::default()
+        };
+        let engine = Box::new(ThresholdEngine::new(ThresholdConfig::default()));
+        let mut controller = Controller::new(cfg, engine).unwrap();
+        let good_target = Arc::new(AtomicU32::new(1));
+        let good = BulkClient {
+            fail: false,
+            target: Arc::clone(&good_target),
+        };
+        let bad_target = Arc::new(AtomicU32::new(1));
+        let bad = BulkClient {
+            fail: true,
+            target: Arc::clone(&bad_target),
+        };
+        let good_instance = Arc::new(Instance::new("visible".to_string(), Path::new(""), 0, good));
+        let bad_instance = Arc::new(Instance::new("hidden".to_string(), Path::new(""), 0, bad));
+        good_instance.status.write().await.vcpu_count = 16;
+        bad_instance.status.write().await.vcpu_count = 16;
+        controller
+            .instances
+            .insert("visible".to_string(), good_instance.clone());
+        controller
+            .instances
+            .insert("hidden".to_string(), bad_instance.clone());
+
+        let (failed, summary) = controller.handle_set_all_thread_counts(4, true).await;
+
+        assert_eq!(failed, 1);
+        assert_eq!(good_target.load(Ordering::Relaxed), 4);
+        assert_eq!(bad_target.load(Ordering::Relaxed), 1);
+        assert!(good_instance.status.read().await.manual_scaling_sticky);
+        assert!(!bad_instance.status.read().await.manual_scaling_sticky);
+        assert!(summary.contains("1/2"));
+        assert!(summary.contains("hidden: injected failure"));
     }
 
     struct SnapshotClient {

@@ -68,6 +68,9 @@ pub struct Config {
     /// every tick (default `true`).
     #[serde(default = "default_true")]
     pub enable_per_vm_status_line: bool,
+    /// Also emit each per-VM status record on the main controller target.
+    #[serde(default)]
+    pub enable_per_vm_main_log: bool,
     /// Emit a single aggregate status line summarising every
     /// tracked instance on every tick (default `true`).
     #[serde(default = "default_true")]
@@ -75,6 +78,17 @@ pub struct Config {
     /// Emit a one-time legend for status-line fields at startup.
     #[serde(default)]
     pub print_status_header: bool,
+    /// Cap how many instances may be actuated in any single tick.  0 disables
+    /// the cap.
+    #[serde(default = "default_max_instances_adjusted_per_poll")]
+    pub max_instances_adjusted_per_poll: u32,
+    /// Opt in to sampling `/proc/pressure/{cpu,io,memory}` on
+    /// every tick and exposing it to the active engine.
+    #[serde(default)]
+    pub experimental_psi_monitoring: bool,
+    /// When true, re-read cgroup limits on each CPU sample.
+    #[serde(default)]
+    pub refresh_cgroup_on_each_read: bool,
     /// When true, log the scaling verdict but skip the actuation
     /// call to `set_thread_count`.
     #[serde(default)]
@@ -116,6 +130,10 @@ pub(crate) fn serialize_percent<S: Serializer>(
     serializer.serialize_f64(value * 100.0)
 }
 
+fn default_max_instances_adjusted_per_poll() -> u32 {
+    0
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -129,19 +147,57 @@ impl Default for Config {
             cooldown_secs: 30.0,
             vm_state_path: Path::new("/run/io-thread-controller/vm-ownership.json"),
             enable_per_vm_status_line: true,
+            enable_per_vm_main_log: false,
             enable_aggregate_status_line: true,
             print_status_header: false,
+            max_instances_adjusted_per_poll: default_max_instances_adjusted_per_poll(),
+            experimental_psi_monitoring: false,
+            refresh_cgroup_on_each_read: false,
             dry_run: false,
         }
     }
 }
 
-/// Load a JSON config file.
-pub fn load_config<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, ConfigError> {
+/// Envelope carrying the `include` key: a relative path to
+/// another JSON file merged first, then overridden by keys in
+/// the outer document.
+#[derive(Debug, Deserialize)]
+struct ConfigEnvelope {
+    #[serde(default)]
+    include: Option<String>,
+    #[serde(flatten)]
+    rest: serde_json::Value,
+}
+
+/// Load any JSON document that opts into the `include`
+/// mechanism.  Engines call this on their own config file so
+/// site-specific overrides can live in a sibling file.
+pub fn load_json_with_includes<T: for<'de> Deserialize<'de>>(
+    path: impl AsRef<Path>,
+) -> Result<T, ConfigError> {
     let path = path.as_ref();
+    let value = load_config_value(path)?;
+    let out: T = serde_json::from_value(value)?;
+    Ok(out)
+}
+
+fn load_config_value(path: &Path) -> Result<serde_json::Value, ConfigError> {
     let data = std::fs::read_to_string(path)?;
-    let val: T = serde_json::from_str(&data)?;
-    Ok(val)
+    let env: ConfigEnvelope = serde_json::from_str(&data)?;
+    let mut merged = if let Some(rel) = env.include {
+        let path = Path::new(".");
+        let inc_path = Path::new(&path.parent().unwrap_or_else(|| &path).join(&rel));
+        load_config_value(&inc_path)?
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+    // RFC 7396 merge-patch; delegated to the `json_patch` crate so
+    // we do not carry our own recursive merge helper.  Semantic
+    // note: a `null` value in the outer patch would *delete* the
+    // key rather than overwriting to null.  Our config schema has
+    // no null sentinels today so this is a no-op distinction.
+    json_patch::merge(&mut merged, &env.rest);
+    Ok(merged)
 }
 
 // TODO add a RawConfig or ValidatedConfig to ensure an unvalidated config
@@ -241,7 +297,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg: Config = load_config(Path::new(path.to_str().unwrap())).unwrap();
+        let cfg: Config = load_json_with_includes(Path::new(path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.engine, "threshold");
         assert!((cfg.scale_poll_secs - 7.5).abs() < f64::EPSILON);
         assert_eq!(
@@ -268,7 +324,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_config::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_json_with_includes::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 
@@ -294,5 +350,17 @@ mod tests {
 
         let serialized = serde_json::to_string(&cfg).unwrap();
         assert!(serialized.contains(r#""host_cpu_scale_up_ceiling_percent":90.0"#));
+    }
+
+    /// Test that `refresh_cgroup_on_each_read` defaults to false in
+    /// `Default` and empty JSON.
+    #[test]
+    fn test_cgroup_refresh_defaults_to_false() {
+        assert!(!Config::default().refresh_cgroup_on_each_read);
+        let from_json: Config = serde_json::from_str(
+            r#"{"engine": "foo", "engine_config_dir": "/engines", "backend_config_dir": "/backends", "scale_poll_secs": 10, "vm_state_path": "/path/to/vm-state"}"#,
+        )
+        .unwrap();
+        assert!(!from_json.refresh_cgroup_on_each_read);
     }
 }

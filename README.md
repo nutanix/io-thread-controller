@@ -84,6 +84,18 @@ managed and unmanaged classifications across daemon restarts.
                 +------------------------------------------+
 ```
 
+## Configuration includes
+
+Controller, engine, and backend JSON files may contain an `include` field. Its
+path is resolved relative to the including file, loaded recursively, and merged
+before the including file's keys are applied.
+
+## Thread-name filtering
+
+Backends may select fallback `/proc` CPU samples with regular expressions and
+an exact-name ignore list. Exact ignores take precedence; when no match
+expressions are configured, every nonignored task is sampled.
+
 ## Scale-up state machine
 
 ```text
@@ -131,6 +143,19 @@ The QEMU backend discovers active VMs through libvirt and sends QMP commands
 through `virDomainQemuMonitorCommand`. Its configuration is loaded from
 `backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
 or changed through the backend CLI and D-Bus operations.
+
+## Cgroup throttling
+
+With `refresh_cgroup_on_each_read` enabled, each refresh reads the VM process's
+cgroup v2 `cpu.max` and `cpu.stat`. The threshold engine setting
+`block_scale_up_when_cgroup_throttled` suppresses scale-up when
+`throttled_usec` increased since the preceding sample.
+
+## Experimental PSI monitoring
+
+With `experimental_psi_monitoring` enabled, each tick samples the CPU, I/O, and
+memory `some.avg10` values from `/proc/pressure` and exposes them to the active
+scaling engine. Sampling is disabled by default.
 
 ## Status line
 
@@ -200,10 +225,12 @@ The daemon owns:
 - object path: `/com/nutanix/io_thread_controller1`
 - interface: `com.nutanix.io_thread_controller1`
 
-Debug builds expose `SetThreadCount(vm, threads, sticky)` to change a tracked
-instance's thread count. Setting `sticky=true` suppresses automatic scaling for
-that instance until a later call clears it. This debug-only override is kept in
-memory and is lost when the daemon restarts.
+Debug builds expose `SetThreadCount(vm, threads, sticky)` and
+`SetAllThreadCounts(threads, sticky)`. The latter attempts every VM in the
+daemon inventory and reports partial failures without undoing successful
+updates. Setting `sticky=true` suppresses automatic scaling for each successful
+VM until a later debug call clears it. The override is kept in memory and is
+lost when the daemon restarts.
 
 `GetStats()` returns a JSON fleet snapshot. For example:
 
@@ -398,17 +425,19 @@ it never sees a backend directly.
 | `Esc`                   | Clear focus (repaint every vm)                        |
 | `+`, `=`                | Ask the daemon to add one thread to the focused vm     |
 | `-`, `_`                | Ask the daemon to remove one thread from the focused vm |
+| `A`                     | Set every VM in the daemon inventory to an exact count |
 | `s`                     | Toggle sticky mode for `+` / `-` (title bar shows `[STICKY]`) |
 
-**`+` / `-` always route through the daemon.**  Both
+**`+` / `-` / `A` always route through the daemon.**  Both
 per-frame stats (via `GetSnapshot`) and manual actuations
-(via `SetThreadCount(vm, threads, sticky)`) go over
+(via `SetThreadCount` or `SetAllThreadCounts`) go over
 `com.nutanix.io_thread_controller1` on
 `/com/nutanix/io_thread_controller1`, so the daemon is the
-single source of truth for `manual_scaling_sticky`.  A wire
-error on either verb logs at WARN on the `iothread-tui`
-tracing target (and shows up in the daemon journal too) but
-otherwise leaves the UI running so the operator can retry.
+single source of truth for `manual_scaling_sticky`. `A` targets the complete
+daemon inventory, including VMs hidden by `--select`. A wire error on either
+verb logs at WARN on the `iothread-tui` tracing target (and shows up in the
+daemon journal too) but otherwise leaves the UI running so the operator can
+retry.
 There is no direct-backend fallback path — a missing daemon
 is a fatal condition the binary refuses to start with.
 
