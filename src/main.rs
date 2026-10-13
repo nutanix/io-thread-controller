@@ -16,7 +16,7 @@ use io_thread_controller::{
     util::Path,
 };
 use thiserror::Error;
-use tracing::instrument;
+use tracing::{debug, instrument};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Error, Debug)]
@@ -125,6 +125,7 @@ async fn main() -> Result<(), IoThreadControllerError> {
     }
 
     let mut cfg = load_daemon_config(&cli.config)?;
+    debug!("loaded configuration {}", &cli.config);
     if cli.print_status_header {
         cfg.print_status_header = true;
     }
