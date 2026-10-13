@@ -147,16 +147,6 @@ struct ConfigEnvelope {
     rest: serde_json::Value,
 }
 
-/// Read a JSON configuration file, resolving nested `include`
-/// directives (relative to the including file), and apply the
-/// merged result on top of the built-in defaults.
-pub fn load_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
-    let path = path.as_ref();
-    let value = load_config_value(path)?;
-    let cfg: Config = serde_json::from_value(value)?;
-    Ok(cfg)
-}
-
 /// Load any JSON document that opts into the `include`
 /// mechanism.  Engines call this on their own config file so
 /// site-specific overrides can live in a sibling file.
@@ -285,7 +275,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg: Config = load_config(Path::new(path.to_str().unwrap())).unwrap();
+        let cfg: Config = load_json_with_includes(Path::new(path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.engine, "threshold");
         assert!((cfg.scale_poll_secs - 7.5).abs() < f64::EPSILON);
         assert_eq!(
@@ -312,7 +302,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_config(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_json_with_includes::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 
