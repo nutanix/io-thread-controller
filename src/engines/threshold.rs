@@ -188,7 +188,7 @@ enum PostRevertUpHold {
     /// Scale-up still blocked while a settled baseline rate is measured.
     Recovery {
         polls_remaining: u32,
-        window_start: RateWindow,
+        window_start: IoSample,
     },
 }
 /// Per-VM counters owned by this engine.
@@ -273,7 +273,7 @@ impl InstanceState {
 
     /// Advance grace/recovery state. Returns true while scale-up must stay
     /// blocked.
-    fn advance_post_revert_up_hold(&mut self, sample: RateWindow, recovery_polls: u32) -> bool {
+    fn advance_post_revert_up_hold(&mut self, sample: IoSample, recovery_polls: u32) -> bool {
         let Some(hold) = self.post_revert_up_hold.take() else {
             return false;
         };
