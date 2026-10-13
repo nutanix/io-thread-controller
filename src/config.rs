@@ -79,6 +79,9 @@ pub struct Config {
     /// the cap.
     #[serde(default = "default_max_instances_adjusted_per_poll")]
     pub max_instances_adjusted_per_poll: u32,
+    /// every tick and exposing it to the active engine.
+    #[serde(default)]
+    pub experimental_psi_monitoring: bool,
     /// When true, log the scaling verdict but skip the actuation
     /// call to `set_thread_count`.
     #[serde(default)]
@@ -140,6 +143,7 @@ impl Default for Config {
             enable_aggregate_status_line: true,
             print_status_header: false,
             max_instances_adjusted_per_poll: default_max_instances_adjusted_per_poll(),
+            experimental_psi_monitoring: false,
             dry_run: false,
         }
     }
