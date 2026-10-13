@@ -90,6 +90,12 @@ Controller, engine, and backend JSON files may contain an `include` field. Its
 path is resolved relative to the including file, loaded recursively, and merged
 before the including file's keys are applied.
 
+## Thread-name filtering
+
+Backends may select fallback `/proc` CPU samples with regular expressions and
+an exact-name ignore list. Exact ignores take precedence; when no match
+expressions are configured, every nonignored task is sampled.
+
 ## Scale-up state machine
 
 ```text
