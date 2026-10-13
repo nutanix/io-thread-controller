@@ -47,7 +47,7 @@ enum IoThreadControllerError {
 )]
 struct Cli {
     /// Top-level controller configuration.
-    #[arg(long, default_value = "/etc/io-thread-controller/config.json")]
+    #[arg(long, default_value = "/etc/io-thread-controller.json")]
     config: Path,
 
     /// Print built-in defaults and exit.
