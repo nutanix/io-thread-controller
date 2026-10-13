@@ -64,10 +64,25 @@ futures-util = "0.3"
 procfs = { version = "0.18", default-features = false }
 regex = "1"
 
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "=5.12.0", default-features = false, features = ["tokio"] }
+zbus_macros = "=5.12.0"
+zbus_names = "=4.2.0"
+zvariant = "=5.8.0"
+zvariant_derive = "=5.8.0"
+zvariant_utils = "=3.2.0"
+
+# latest versions that support Rust 1.84
+json-patch = { version = "3", default-features = false }
+# libvirt Rust bindings, gated behind the `qemu` feature.  The
+# `qemu` sub-feature of the crate exposes
+# `virDomainQemuMonitorCommand`, which the backend uses for
+# iothread lifecycle and vq-mapping passthrough (native
+# `add_iothread` / `del_iothread` are not exposed by the crate
+# yet -- see backends/qemu/libvirt.rs).
+
 virt = { version = "0.4", features = ["qemu"], optional = true }
 rustix = { version = "1", features = ["param"], optional = true }
-uuid = { version = "1", optional = true }
+uuid = { version = "=1.20.0", optional = true }
 
 ratatui = { version = "0.30", default-features = false, features = [
     "crossterm",

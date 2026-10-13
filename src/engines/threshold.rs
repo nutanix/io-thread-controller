@@ -214,7 +214,7 @@ impl ThresholdEngine {
         let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
         // TODO TOCTOU, blindly load and return default if ENOENT
         let cfg: ThresholdConfig = if path.exists() {
-            crate::config::load_config(path)?
+            crate::config::load_json_with_includes(path)?
         } else {
             ThresholdConfig::default()
         };
