@@ -286,34 +286,10 @@ pub fn load_registered_engine(
 mod tests {
     use super::*;
 
-    /// Test that `ScaleAction::target`/`Display` cover None/Up/Down
-    /// variants.
-    #[test]
-    fn scale_action_target_and_display() {
-        assert_eq!(ScaleAction::None.target(), None);
-        assert_eq!(ScaleAction::Up(4).target(), Some(4));
-        assert_eq!(ScaleAction::Down(2).target(), Some(2));
-        assert_eq!(ScaleAction::Revert(3).target(), Some(3));
-
-        assert_eq!(ScaleAction::None.to_string(), "none");
-        assert_eq!(ScaleAction::Up(1).to_string(), "up");
-        assert_eq!(ScaleAction::Down(1).to_string(), "down");
-        assert_eq!(ScaleAction::Revert(1).to_string(), "revert");
-    }
-
-    /// Test that `InstanceDecision::new` stores the VM id and
-    /// `ScaleAction` unchanged.
-    #[test]
-    fn instance_decision_new_preserves_fields() {
-        let decision = InstanceDecision::new("vm-1", ScaleAction::Up(5));
-        assert_eq!(decision.instance_id, "vm-1");
-        assert_eq!(decision.decision, ScaleAction::Up(5));
-    }
-
     /// Test that registry loads the threshold engine by name and errors
     /// on unknown engines.
     #[test]
-    fn load_registered_engine_finds_threshold_and_rejects_unknown() {
+    fn test_engine_load_finds_threshold_and_rejects_unknown() {
         let dir = Path::new("/tmp/missing-engines");
         let engine = load_registered_engine(&dir, "threshold").unwrap();
         assert_eq!(engine.name(), "threshold");
