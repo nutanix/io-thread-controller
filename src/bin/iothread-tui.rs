@@ -2931,8 +2931,8 @@ fn render_line_canvas(
     // `v` even if data would fit lower or bulge higher.  Set
     // via the `y` hotkey.
     y_max_override: Option<f64>,
-    // X-axis time-label mode.  When `false` (the default) the
-    // canvas renders labels as elapsed seconds ("-30s" ... "0s").
+    // X-axis time-label mode. When `false` (the default) the
+    // canvas renders elapsed seconds since TUI startup ("0s" ...).
     // When `true` the labels are `HH:MM:SS` local wall-clock,
     // derived from `x_wall_clock_epoch_s + t`.  Independent of
     // the log toggle -- the X axis is always linear on time.
@@ -2994,7 +2994,8 @@ fn render_line_canvas(
     }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Line::from(title_spans));
+        .title(Line::from(title_spans))
+        .style(Style::default().fg(axis_color).bg(background));
 
     let canvas = Canvas::default()
         .block(block)
@@ -3072,12 +3073,7 @@ fn render_line_canvas(
                     let s = secs % 60;
                     format!("{h:02}:{m:02}:{s:02}")
                 } else {
-                    let dt = t - x_hi;
-                    if dt.abs() < 0.5 {
-                        "now".to_string()
-                    } else {
-                        format!("{dt:.0}s")
-                    }
+                    format!("{t:.0}s")
                 }
             };
             // Multi-tick X-axis: pick a "nice" tick interval
