@@ -1577,7 +1577,7 @@ fn draw_column_picker(f: &mut ratatui::Frame, ui: &UiState) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("columns")
-                .style(Style::default().fg(theme.accent)),
+                .style(Style::default().fg(theme.accent).bg(theme.background)),
         ),
         rect,
     );
@@ -1770,7 +1770,9 @@ fn draw_input_prompt(f: &mut ratatui::Frame, ui: &UiState) {
         .borders(Borders::ALL)
         .title(" input ")
         .style(Style::default().bg(theme.background));
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines)
+        .style(Style::default().fg(theme.axis).bg(theme.background))
+        .block(block);
     f.render_widget(para, area);
 }
 
@@ -2066,7 +2068,9 @@ fn draw_daemon_lost_overlay(f: &mut ratatui::Frame, ui: &UiState, err: &str) {
         Line::from(""),
         Line::from("press q to quit; the TUI keeps retrying in the background"),
     ];
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines)
+        .style(Style::default().fg(theme.axis).bg(theme.background))
+        .block(block);
     f.render_widget(para, area);
 }
 
@@ -2185,7 +2189,14 @@ fn draw_title(
             Style::default().fg(ui.theme().axis),
         ),
     ]);
-    f.render_widget(title_line, area);
+    f.render_widget(
+        Paragraph::new(title_line).style(
+            Style::default()
+                .fg(ui.theme().axis)
+                .bg(ui.theme().background),
+        ),
+        area,
+    );
 }
 
 /// Stack every active plot into the given rectangle with
@@ -2757,7 +2768,13 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
     let header = Row::new(
         visible
             .iter()
-            .map(|c| Cell::from(c.label()).style(Style::default().add_modifier(Modifier::BOLD)))
+            .map(|c| {
+                Cell::from(c.label()).style(
+                    Style::default()
+                        .fg(ui.theme().axis)
+                        .add_modifier(Modifier::BOLD),
+                )
+            })
             .collect::<Vec<_>>(),
     )
     .height(1);
@@ -2848,7 +2865,18 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
         .collect();
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("vms"));
+        .style(
+            Style::default()
+                .fg(ui.theme().axis)
+                .bg(ui.theme().background),
+        )
+        .block(
+            Block::default().borders(Borders::ALL).title("vms").style(
+                Style::default()
+                    .fg(ui.theme().axis)
+                    .bg(ui.theme().background),
+            ),
+        );
     f.render_widget(table, area);
 }
 
@@ -3006,9 +3034,9 @@ fn render_line_canvas(
             for (_, list) in &annots {
                 for (t, old_n, new_n, y) in list {
                     let (arrow_color, marker_text) = if new_n >= old_n {
-                        (Color::Green, format!("{old_n}→{new_n}"))
+                        (Color::LightGreen, format!("{old_n}→{new_n}"))
                     } else {
-                        (Color::Red, format!("{old_n}→{new_n}"))
+                        (Color::LightRed, format!("{old_n}→{new_n}"))
                     };
                     ctx.print(
                         *t,
