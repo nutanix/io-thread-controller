@@ -15,11 +15,6 @@ from harness.mockfs import MockProc
 
 
 @pytest.fixture
-def fake_backend(tmp_path):
-    return FakeBackend(tmp_path)
-
-
-@pytest.fixture
 def dbus_server(tmp_path):
     server = DBusServer(tmp_path)
     server.start()
@@ -32,6 +27,13 @@ def mock_proc(tmp_path, dbus_server):
     proc = MockProc(tmp_path, built_binary("mockfsd"), dbus_server)
     yield proc
     proc.stop()
+
+
+@pytest.fixture
+def fake_backend(tmp_path, mock_proc):
+    backend = FakeBackend(tmp_path, mock_proc)
+    yield backend
+    backend.stop()
 
 
 @pytest.fixture

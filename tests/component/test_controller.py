@@ -141,14 +141,14 @@ def test_actuation_enforces_host_cpu_scale_up_ceiling(
         cooldown_secs=0
     )
     wait_for(
-        lambda: fake_backend.calls() == [2],
+        lambda: controller.stats()
+        and controller.stats()["vms"][0]["per_thread_util"] > 0.6,
         timeout=10,
-        description="first scale-up before the host ceiling is known",
+        description="procfs CPU sample while host ceiling is active",
     )
-    fake_backend.clear_calls()
     time.sleep(POLL_S * 5)
     assert fake_backend.calls() == [], controller.logs()
-    assert fake_backend.thread_count() == 2
+    assert fake_backend.thread_count() == 1
 
 
 def test_tick_refreshes_evaluates_and_drops_failed_instances(

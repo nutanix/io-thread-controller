@@ -6,8 +6,8 @@
 //! Shared QEMU helpers.
 //!
 //! Everything here is transport-neutral: prometheus-body topology
-//! parsing, /proc jiffies sampling, VQ round-robin, iothread id
-//! allocation, and the [`QemuError`] shape used by the QMP
+//! parsing, VQ round-robin, iothread id allocation, and the [`QemuError`]
+//! shape used by the QMP
 //! transport in [`crate::backends::qemu::libvirt`].  The libvirt-
 //! backed transport lives in `backends/qemu/libvirt.rs`; the
 //! per-VM state that used to live in this module now belongs to
@@ -16,23 +16,16 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
-    ops::Sub,
     sync::{
         LazyLock,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
 };
 
-use procfs::process::Process;
 use regex::Regex;
-use rustix::param;
 use thiserror::Error;
 
-use crate::{
-    backends::{BackendClientError, VqMapping},
-    util::Path,
-};
+use crate::backends::{BackendClientError, VqMapping};
 
 /// Errors produced while querying or reconfiguring a QEMU vm.
 #[derive(Debug, Error)]
@@ -195,89 +188,6 @@ impl QemuTopology {
             topo.vq_inflight = per_vq.into_values().collect();
         }
         topo
-    }
-}
-
-// ---------------------------------------------------------------------
-// /proc helpers
-// ---------------------------------------------------------------------
-
-/// Per-IOThread cumulative CPU counters sampled at one wall-clock instant.
-#[derive(Debug, Clone)]
-pub struct CpuSample {
-    /// Cumulative user-plus-system jiffies keyed by host task ID.
-    pub jiffies: HashMap<i32, u64>,
-    /// Wall-clock time at which the counters were sampled.
-    // FIXME rename to sampled_at
-    pub wall: Instant,
-}
-
-impl Default for CpuSample {
-    fn default() -> Self {
-        Self {
-            jiffies: HashMap::new(),
-            wall: Instant::now(),
-        }
-    }
-}
-
-impl CpuSample {
-    /// Sample cumulative CPU jiffies for every discovered IOThread task.
-    pub fn new(
-        pid: i32,
-        iothread_tids: &BTreeMap<String, i32>,
-    ) -> Result<Self, BackendClientError> {
-        let mut out = Self {
-            jiffies: HashMap::new(),
-            wall: Instant::now(),
-        };
-
-        let p = Process::new_with_root(Path::proc_pid(pid))?;
-        for &tid in iothread_tids.values() {
-            let stat = p.task_from_tid(tid)?.stat()?;
-            out.jiffies.insert(tid, stat.utime + stat.stime);
-        }
-        Ok(out)
-    }
-
-    /// Compute average per-IOThread CPU utilisation between two samples.
-    // TODO add unit test for this function and the call site, and that it can be
-    // folded into the Sub.
-    pub fn diff_jiffies_sample(prev: &Self, cur: &Self) -> f64 {
-        let Some(elapsed) = cur.wall.checked_duration_since(prev.wall) else {
-            return 0.0;
-        };
-        let elapsed = elapsed.as_secs_f64();
-        if elapsed <= 0.0 {
-            return 0.0;
-        }
-        let hz = param::clock_ticks_per_second() as f64;
-        assert!(hz > 0.0);
-        let mut total = 0.0;
-        let mut counted = 0u32;
-        for (&tid, &after) in &cur.jiffies {
-            let Some(&before) = prev.jiffies.get(&tid) else {
-                continue;
-            };
-            if after < before {
-                continue;
-            }
-            let delta = (after - before) as f64;
-            let frac = ((delta / hz) / elapsed).clamp(0.0, 1.0);
-            total += frac;
-            counted += 1;
-        }
-        if counted == 0 {
-            return 0.0;
-        }
-        total / counted as f64
-    }
-}
-
-impl Sub<&CpuSample> for &CpuSample {
-    type Output = f64;
-    fn sub(self, rhs: &CpuSample) -> Self::Output {
-        CpuSample::diff_jiffies_sample(rhs, self)
     }
 }
 
