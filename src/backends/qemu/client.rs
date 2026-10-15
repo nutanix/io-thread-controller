@@ -12,8 +12,7 @@
 //!   * the [`super::libvirt::LibvirtQmp`] transport (QMP multiplexed through
 //!     libvirt's `virDomainQemuMonitorCommand`);
 //!   * the per-VM topology cache (iothread ids + TIDs, virtio-scsi device path,
-//!     virtqueue count);
-//!   * the per-tick CPU sample used to compute per-IOThread utilisation.
+//!     virtqueue count).
 //!
 //! Everything the controller used to keep in `QemuInstance` /
 //! `QemuState` now lives here, behind the generic per-VM interface.
@@ -29,9 +28,7 @@ use crate::{
     backends::{
         BackendClientError, IoThreadProperties, VqMapping,
         qemu::{
-            helpers::{
-                CpuSample, QemuError, QemuTopology, next_qemu_iothread_id, round_robin_vq_mapping,
-            },
+            helpers::{QemuError, QemuTopology, next_qemu_iothread_id, round_robin_vq_mapping},
             libvirt::LibvirtQmp,
         },
     },
@@ -69,8 +66,6 @@ struct Inner {
     /// Number of command virtqueues exposed by the device.
     vq_count: u16,
 
-    /// Previous per-task CPU sample used to calculate utilisation.
-    last_sample: Option<CpuSample>,
     /// Whether we've already warned that prometheus metrics are unsupported.
     warned_unsupported_metrics: bool,
 }
@@ -180,10 +175,7 @@ impl QemuInstanceClient {
         };
 
         Ok(ThreadPoolSnapshot {
-            thread_count,
             perf,
-            // Cannot derive per-thread util without fresh topology/TID data.
-            per_thread_util: None,
             vcpu_count: self.vcpu_count,
         })
     }
@@ -271,13 +263,6 @@ impl InstanceClient for QemuInstanceClient {
                 "invalid pid {pid} from tid {first_tid}"
             )));
         }
-        let sample = CpuSample::new(pid, &topo.iothread_tids)?;
-        if sample.jiffies.is_empty() {
-            return Err(BackendClientError::InvalidState(
-                "qemu per-thread sample empty".into(),
-            ));
-        }
-
         let mut s = self.inner.lock().await;
         s.pid = pid;
         s.iothreads = topo.iothreads.clone();
@@ -285,17 +270,6 @@ impl InstanceClient for QemuInstanceClient {
         s.device_path = topo.device_path.clone();
         s.vq_count = topo.vq_count;
 
-        let per_thread_util = if let Some(prev) = s.last_sample.take() {
-            let util = &sample - &prev;
-            s.last_sample = Some(sample);
-            Some(util)
-        } else {
-            // Warm-up tick: report None so the engine leaves
-            // per_thread_util at 0.0.  Next tick has a `prev`
-            // sample and returns a real delta.
-            s.last_sample = Some(sample);
-            None
-        };
         // Feed block statistics to the engine so
         // revert-on-drop validation compares apples to apples
         // across backends.  A best-effort call: an error here
@@ -313,11 +287,8 @@ impl InstanceClient for QemuInstanceClient {
                 None
             }
         };
-        let thread_count = topo.iothreads.len() as u32;
         Ok(ThreadPoolSnapshot {
-            thread_count,
             perf,
-            per_thread_util,
             vcpu_count: self.vcpu_count,
         })
     }
