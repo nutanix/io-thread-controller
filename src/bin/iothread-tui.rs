@@ -308,11 +308,11 @@ impl VmState {
     }
 }
 
-/// Palette / accent bundle for one operator-selectable
-/// theme.  Themes are picked at runtime with the `t` hotkey
-/// which walks [`THEMES`]; every render path resolves its
-/// colours via [`UiState::theme`] so a fresh theme takes effect
-/// on the next redraw without touching per-VM state.
+/// Palette / accent bundle for one operator-selectable theme.
+/// Themes are picked at runtime with the `t` hotkey; every render
+/// path resolves its colours via [`UiState::theme`] so a fresh
+/// theme takes effect on the next redraw without touching
+/// per-VM state.
 struct Theme {
     /// Display name shown on the title bar and in the help
     /// overlay.
@@ -342,13 +342,10 @@ struct Theme {
     background: Color,
 }
 
-/// Built-in themes.  Kept small on purpose: an operator who
-/// wants more can add an entry to the array without touching
-/// anything else.  Order matters -- `THEMES[0]` is the
-/// startup default and matches the pre-theme look of the TUI.
+/// Built-in themes. The light theme is the startup default.
 const THEMES: &[Theme] = &[
     Theme {
-        name: "default-dark",
+        name: "dark",
         palette: &[
             Color::Cyan,
             Color::LightMagenta,
@@ -360,12 +357,12 @@ const THEMES: &[Theme] = &[
             Color::White,
         ],
         aggregate: Color::Gray,
-        axis: Color::DarkGray,
+        axis: Color::White,
         accent: Color::Magenta,
         background: Color::Black,
     },
     Theme {
-        name: "default-light",
+        name: "light",
         palette: &[
             Color::Blue,
             Color::Magenta,
@@ -373,72 +370,13 @@ const THEMES: &[Theme] = &[
             Color::Red,
             Color::Cyan,
             Color::DarkGray,
-            Color::Yellow,
+            Color::Rgb(0x80, 0x60, 0x00),
             Color::Black,
         ],
-        aggregate: Color::DarkGray,
-        axis: Color::Gray,
+        aggregate: Color::Black,
+        axis: Color::Black,
         accent: Color::Blue,
         background: Color::White,
-    },
-    // Vim-desert-ish: warm amber + green on dark bg.
-    Theme {
-        name: "vim-desert",
-        palette: &[
-            Color::Yellow,
-            Color::LightRed,
-            Color::LightGreen,
-            Color::LightCyan,
-            Color::LightMagenta,
-            Color::Cyan,
-            Color::White,
-            Color::LightBlue,
-        ],
-        aggregate: Color::Gray,
-        axis: Color::DarkGray,
-        accent: Color::Yellow,
-        // #333 charcoal so amber traces pop.
-        background: Color::Rgb(0x33, 0x2d, 0x29),
-    },
-    // Solarized-dark-ish: base colours picked from a
-    // dark-friendly rotation.
-    Theme {
-        name: "solarized-dark",
-        palette: &[
-            Color::LightBlue,
-            Color::LightGreen,
-            Color::LightMagenta,
-            Color::Yellow,
-            Color::LightCyan,
-            Color::LightRed,
-            Color::Cyan,
-            Color::White,
-        ],
-        aggregate: Color::DarkGray,
-        axis: Color::DarkGray,
-        accent: Color::LightCyan,
-        // Canonical solarized base03.
-        background: Color::Rgb(0x00, 0x2b, 0x36),
-    },
-    // Gruvbox-ish: earthy tones that read well on both light
-    // and dark terminals.
-    Theme {
-        name: "gruvbox",
-        palette: &[
-            Color::LightRed,
-            Color::Yellow,
-            Color::LightGreen,
-            Color::Cyan,
-            Color::LightBlue,
-            Color::LightMagenta,
-            Color::White,
-            Color::Gray,
-        ],
-        aggregate: Color::DarkGray,
-        axis: Color::DarkGray,
-        accent: Color::LightRed,
-        // Canonical gruvbox dark0_hard.
-        background: Color::Rgb(0x1d, 0x20, 0x21),
     },
 ];
 
@@ -1157,7 +1095,7 @@ impl UiState {
             sticky_mode: false,
             show_help: false,
             input_prompt: None,
-            theme_idx: 0,
+            theme_idx: 1,
             columns,
             column_picker: None,
             log_y_scale: false,
@@ -1639,7 +1577,7 @@ fn draw_column_picker(f: &mut ratatui::Frame, ui: &UiState) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("columns")
-                .style(Style::default().fg(theme.accent)),
+                .style(Style::default().fg(theme.accent).bg(theme.background)),
         ),
         rect,
     );
@@ -1832,7 +1770,9 @@ fn draw_input_prompt(f: &mut ratatui::Frame, ui: &UiState) {
         .borders(Borders::ALL)
         .title(" input ")
         .style(Style::default().bg(theme.background));
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines)
+        .style(Style::default().fg(theme.axis).bg(theme.background))
+        .block(block);
     f.render_widget(para, area);
 }
 
@@ -2128,7 +2068,9 @@ fn draw_daemon_lost_overlay(f: &mut ratatui::Frame, ui: &UiState, err: &str) {
         Line::from(""),
         Line::from("press q to quit; the TUI keeps retrying in the background"),
     ];
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines)
+        .style(Style::default().fg(theme.axis).bg(theme.background))
+        .block(block);
     f.render_widget(para, area);
 }
 
@@ -2153,7 +2095,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame, ui: &UiState) {
         Line::from("  m                  toggle IOPS <-> bandwidth"),
         Line::from("  r                  prompt for refresh cadence in seconds"),
         Line::from("  c                  toggle dashboard columns"),
-        Line::from("  t                  cycle theme (light/dark, vim, solarized, gruvbox)"),
+        Line::from("  t                  cycle theme (dark/light)"),
         Line::from("  1 2 3 4 5          toggle perf / latency / cpu / qd / us-per-iop panes"),
         Line::from("  ↑ / k              focus previous vm (hides others)"),
         Line::from("  ↓ / j              focus next vm (last slot = TOTAL)"),
@@ -2232,12 +2174,11 @@ fn draw_title(
         Span::raw(format!("  {}", ui.perf_metric.axis_label(cli.iop_size))),
         Span::raw(format!("  refresh {}", fmt_duration_secs(refresh_secs))),
         Span::raw(format!("  vms={n_vms}")),
-        // The theme name used to appear here as
-        // "theme=default-dark".  Operators reading the title
+        // The theme name appears here as "theme=dark". Operators
         // bar top-to-bottom during a live incident do not need
         // to see the palette; if they want to check which theme
         // they are on, the help overlay (`h`) still lists it.
-        Span::styled(paused, Style::default().fg(Color::Yellow)),
+        Span::styled(paused, Style::default().fg(ui.theme().accent)),
         Span::styled(
             if ui.sticky_mode { " [STICKY]" } else { "" },
             Style::default().fg(ui.theme().accent),
@@ -2248,7 +2189,14 @@ fn draw_title(
             Style::default().fg(ui.theme().axis),
         ),
     ]);
-    f.render_widget(title_line, area);
+    f.render_widget(
+        Paragraph::new(title_line).style(
+            Style::default()
+                .fg(ui.theme().axis)
+                .bg(ui.theme().background),
+        ),
+        area,
+    );
 }
 
 /// Stack every active plot into the given rectangle with
@@ -2397,6 +2345,7 @@ fn draw_perf_plot(
         /* y_humanize= */ ui.perf_metric == PerfMetric::Iops,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Perf).copied(),
         ui.wall_clock_x,
@@ -2533,6 +2482,7 @@ fn draw_latency_plot(
         /* y_humanize= */ true,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Latency).copied(),
         ui.wall_clock_x,
@@ -2597,6 +2547,7 @@ fn draw_cpu_plot(
         /* y_humanize= */ false,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Cpu).copied(),
         ui.wall_clock_x,
@@ -2659,6 +2610,7 @@ fn draw_qd_plot(
         /* y_humanize= */ true,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::QueueDepth).copied(),
         ui.wall_clock_x,
@@ -2728,6 +2680,7 @@ fn draw_cpu_per_iop_plot(
         /* y_humanize= */ false,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::CpuPerIop).copied(),
         ui.wall_clock_x,
@@ -2815,7 +2768,13 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
     let header = Row::new(
         visible
             .iter()
-            .map(|c| Cell::from(c.label()).style(Style::default().add_modifier(Modifier::BOLD)))
+            .map(|c| {
+                Cell::from(c.label()).style(
+                    Style::default()
+                        .fg(ui.theme().axis)
+                        .add_modifier(Modifier::BOLD),
+                )
+            })
             .collect::<Vec<_>>(),
     )
     .height(1);
@@ -2906,7 +2865,18 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
         .collect();
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("vms"));
+        .style(
+            Style::default()
+                .fg(ui.theme().axis)
+                .bg(ui.theme().background),
+        )
+        .block(
+            Block::default().borders(Borders::ALL).title("vms").style(
+                Style::default()
+                    .fg(ui.theme().axis)
+                    .bg(ui.theme().background),
+            ),
+        );
     f.render_widget(table, area);
 }
 
@@ -2947,6 +2917,7 @@ fn render_line_canvas(
     // clusters.
     highlight: &[usize],
     axis_color: Color,
+    background: Color,
     // Log-scale flag.  When on, every series y-value is
     // transformed by `log10(v+1)` before painting and the
     // Y-axis labels are still shown as raw (linear) values so
@@ -3027,6 +2998,7 @@ fn render_line_canvas(
 
     let canvas = Canvas::default()
         .block(block)
+        .background_color(background)
         .marker(Marker::Braille)
         .x_bounds([x_lo, x_hi])
         .y_bounds([y_lo_t, y_hi_t])
@@ -3059,12 +3031,12 @@ fn render_line_canvas(
             // own line colour rides on `bg` so the operator
             // can trace an annotation back to its line even
             // when several lines cluster inside one cell.
-            for (color, list) in &annots {
+            for (_, list) in &annots {
                 for (t, old_n, new_n, y) in list {
                     let (arrow_color, marker_text) = if new_n >= old_n {
-                        (Color::Green, format!("{old_n}→{new_n}"))
+                        (Color::LightGreen, format!("{old_n}→{new_n}"))
                     } else {
-                        (Color::Red, format!("{old_n}→{new_n}"))
+                        (Color::LightRed, format!("{old_n}→{new_n}"))
                     };
                     ctx.print(
                         *t,
@@ -3073,64 +3045,10 @@ fn render_line_canvas(
                             marker_text,
                             Style::default()
                                 .fg(arrow_color)
-                                .bg(*color)
                                 .add_modifier(Modifier::BOLD),
                         )),
                     );
                 }
-            }
-            // Y-axis labels: place at min/mid/max of the
-            // *transformed* range so they land on the correct
-            // rows, but display the *raw* value they map back
-            // to.  In linear mode the mid is the arithmetic
-            // mean of y_lo/y_hi_raw; in log mode we snap
-            // labels to friendly decades between the range
-            // ends so the reader gets a "10 / 100 / 1k"
-            // spread instead of odd non-round numbers.
-            let lbl = |v: f64| -> String {
-                if y_humanize {
-                    humanize(v)
-                } else {
-                    format!("{v:.0}")
-                }
-            };
-            if log_y {
-                // In log mode we want the three shown values
-                // to be evenly spaced *on the log axis*.  Pick
-                // `y_lo`, geometric-mid, `y_hi_raw`.
-                let geo_mid = ((y_lo.max(1.0)) * y_hi_raw).sqrt();
-                ctx.print(
-                    x_lo,
-                    y_hi_t,
-                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    ty(geo_mid),
-                    Line::from(Span::styled(lbl(geo_mid), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    y_lo_t,
-                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
-                );
-            } else {
-                let mid_raw = (y_lo + y_hi_raw) / 2.0;
-                ctx.print(
-                    x_lo,
-                    y_hi_t,
-                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    ty(mid_raw),
-                    Line::from(Span::styled(lbl(mid_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    y_lo_t,
-                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
-                );
             }
             // X-axis timestamps.  Two labels: the left-hand
             // edge of the window and the right-hand edge.  The
@@ -3200,6 +3118,38 @@ fn render_line_canvas(
             }
         });
     f.render_widget(canvas, area);
+
+    // Render Y labels as ordinary widgets after the Canvas. Canvas text at
+    // coordinate bounds can be clipped, while a widget guarantees that the
+    // labels occupy actual terminal cells.
+    let lbl = |v: f64| -> String {
+        if y_humanize {
+            humanize(v)
+        } else {
+            format!("{v:.0}")
+        }
+    };
+    let mid_raw = if log_y {
+        ((y_lo.max(1.0)) * y_hi_raw).sqrt()
+    } else {
+        (y_lo + y_hi_raw) / 2.0
+    };
+    let y_labels = [lbl(y_hi_raw), lbl(mid_raw), lbl(y_lo)];
+    let label_x = area.x.saturating_add(1);
+    let label_width = area.width.saturating_sub(2);
+    let label_rows = [
+        area.y.saturating_add(1),
+        area.y.saturating_add(area.height.saturating_sub(1) / 2),
+        area.y.saturating_add(area.height.saturating_sub(2)),
+    ];
+    for (text, y) in y_labels.into_iter().zip(label_rows) {
+        if label_width > 0 && y < area.y.saturating_add(area.height) {
+            f.render_widget(
+                Paragraph::new(text).style(Style::default().fg(axis_color)),
+                Rect::new(label_x, y, label_width, 1),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
