@@ -308,11 +308,11 @@ impl VmState {
     }
 }
 
-/// Palette / accent bundle for one operator-selectable
-/// theme.  Themes are picked at runtime with the `t` hotkey
-/// which walks [`THEMES`]; every render path resolves its
-/// colours via [`UiState::theme`] so a fresh theme takes effect
-/// on the next redraw without touching per-VM state.
+/// Palette / accent bundle for one operator-selectable theme.
+/// Themes are picked at runtime with the `t` hotkey; every render
+/// path resolves its colours via [`UiState::theme`] so a fresh
+/// theme takes effect on the next redraw without touching
+/// per-VM state.
 struct Theme {
     /// Display name shown on the title bar and in the help
     /// overlay.
@@ -342,13 +342,10 @@ struct Theme {
     background: Color,
 }
 
-/// Built-in themes.  Kept small on purpose: an operator who
-/// wants more can add an entry to the array without touching
-/// anything else.  Order matters -- `THEMES[0]` is the
-/// startup default and matches the pre-theme look of the TUI.
+/// Built-in themes. `THEMES[0]` is the startup default.
 const THEMES: &[Theme] = &[
     Theme {
-        name: "default-dark",
+        name: "dark",
         palette: &[
             Color::Cyan,
             Color::LightMagenta,
@@ -360,12 +357,12 @@ const THEMES: &[Theme] = &[
             Color::White,
         ],
         aggregate: Color::Gray,
-        axis: Color::DarkGray,
+        axis: Color::White,
         accent: Color::Magenta,
         background: Color::Black,
     },
     Theme {
-        name: "default-light",
+        name: "light",
         palette: &[
             Color::Blue,
             Color::Magenta,
@@ -373,72 +370,13 @@ const THEMES: &[Theme] = &[
             Color::Red,
             Color::Cyan,
             Color::DarkGray,
-            Color::Yellow,
+            Color::Rgb(0x80, 0x60, 0x00),
             Color::Black,
         ],
-        aggregate: Color::DarkGray,
-        axis: Color::Gray,
+        aggregate: Color::Black,
+        axis: Color::Black,
         accent: Color::Blue,
         background: Color::White,
-    },
-    // Vim-desert-ish: warm amber + green on dark bg.
-    Theme {
-        name: "vim-desert",
-        palette: &[
-            Color::Yellow,
-            Color::LightRed,
-            Color::LightGreen,
-            Color::LightCyan,
-            Color::LightMagenta,
-            Color::Cyan,
-            Color::White,
-            Color::LightBlue,
-        ],
-        aggregate: Color::Gray,
-        axis: Color::DarkGray,
-        accent: Color::Yellow,
-        // #333 charcoal so amber traces pop.
-        background: Color::Rgb(0x33, 0x2d, 0x29),
-    },
-    // Solarized-dark-ish: base colours picked from a
-    // dark-friendly rotation.
-    Theme {
-        name: "solarized-dark",
-        palette: &[
-            Color::LightBlue,
-            Color::LightGreen,
-            Color::LightMagenta,
-            Color::Yellow,
-            Color::LightCyan,
-            Color::LightRed,
-            Color::Cyan,
-            Color::White,
-        ],
-        aggregate: Color::DarkGray,
-        axis: Color::DarkGray,
-        accent: Color::LightCyan,
-        // Canonical solarized base03.
-        background: Color::Rgb(0x00, 0x2b, 0x36),
-    },
-    // Gruvbox-ish: earthy tones that read well on both light
-    // and dark terminals.
-    Theme {
-        name: "gruvbox",
-        palette: &[
-            Color::LightRed,
-            Color::Yellow,
-            Color::LightGreen,
-            Color::Cyan,
-            Color::LightBlue,
-            Color::LightMagenta,
-            Color::White,
-            Color::Gray,
-        ],
-        aggregate: Color::DarkGray,
-        axis: Color::DarkGray,
-        accent: Color::LightRed,
-        // Canonical gruvbox dark0_hard.
-        background: Color::Rgb(0x1d, 0x20, 0x21),
     },
 ];
 
@@ -2153,7 +2091,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame, ui: &UiState) {
         Line::from("  m                  toggle IOPS <-> bandwidth"),
         Line::from("  r                  prompt for refresh cadence in seconds"),
         Line::from("  c                  toggle dashboard columns"),
-        Line::from("  t                  cycle theme (light/dark, vim, solarized, gruvbox)"),
+        Line::from("  t                  cycle theme (dark/light)"),
         Line::from("  1 2 3 4 5          toggle perf / latency / cpu / qd / us-per-iop panes"),
         Line::from("  ↑ / k              focus previous vm (hides others)"),
         Line::from("  ↓ / j              focus next vm (last slot = TOTAL)"),
@@ -2232,8 +2170,7 @@ fn draw_title(
         Span::raw(format!("  {}", ui.perf_metric.axis_label(cli.iop_size))),
         Span::raw(format!("  refresh {}", fmt_duration_secs(refresh_secs))),
         Span::raw(format!("  vms={n_vms}")),
-        // The theme name used to appear here as
-        // "theme=default-dark".  Operators reading the title
+        // The theme name appears here as "theme=dark". Operators
         // bar top-to-bottom during a live incident do not need
         // to see the palette; if they want to check which theme
         // they are on, the help overlay (`h`) still lists it.
