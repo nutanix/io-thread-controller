@@ -3079,59 +3079,6 @@ fn render_line_canvas(
                     );
                 }
             }
-            // Y-axis labels: place at min/mid/max of the
-            // *transformed* range so they land on the correct
-            // rows, but display the *raw* value they map back
-            // to.  In linear mode the mid is the arithmetic
-            // mean of y_lo/y_hi_raw; in log mode we snap
-            // labels to friendly decades between the range
-            // ends so the reader gets a "10 / 100 / 1k"
-            // spread instead of odd non-round numbers.
-            let lbl = |v: f64| -> String {
-                if y_humanize {
-                    humanize(v)
-                } else {
-                    format!("{v:.0}")
-                }
-            };
-            if log_y {
-                // In log mode we want the three shown values
-                // to be evenly spaced *on the log axis*.  Pick
-                // `y_lo`, geometric-mid, `y_hi_raw`.
-                let geo_mid = ((y_lo.max(1.0)) * y_hi_raw).sqrt();
-                ctx.print(
-                    x_lo,
-                    y_hi_t,
-                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    ty(geo_mid),
-                    Line::from(Span::styled(lbl(geo_mid), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    y_lo_t,
-                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
-                );
-            } else {
-                let mid_raw = (y_lo + y_hi_raw) / 2.0;
-                ctx.print(
-                    x_lo,
-                    y_hi_t,
-                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    ty(mid_raw),
-                    Line::from(Span::styled(lbl(mid_raw), Style::default().fg(axis_color))),
-                );
-                ctx.print(
-                    x_lo,
-                    y_lo_t,
-                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
-                );
-            }
             // X-axis timestamps.  Two labels: the left-hand
             // edge of the window and the right-hand edge.  The
             // rendering mode is bool-flag driven: elapsed
@@ -3200,6 +3147,38 @@ fn render_line_canvas(
             }
         });
     f.render_widget(canvas, area);
+
+    // Render Y labels as ordinary widgets after the Canvas. Canvas text at
+    // coordinate bounds can be clipped, while a widget guarantees that the
+    // labels occupy actual terminal cells.
+    let lbl = |v: f64| -> String {
+        if y_humanize {
+            humanize(v)
+        } else {
+            format!("{v:.0}")
+        }
+    };
+    let mid_raw = if log_y {
+        ((y_lo.max(1.0)) * y_hi_raw).sqrt()
+    } else {
+        (y_lo + y_hi_raw) / 2.0
+    };
+    let y_labels = [lbl(y_hi_raw), lbl(mid_raw), lbl(y_lo)];
+    let label_x = area.x.saturating_add(1);
+    let label_width = area.width.saturating_sub(2);
+    let label_rows = [
+        area.y.saturating_add(1),
+        area.y.saturating_add(area.height.saturating_sub(1) / 2),
+        area.y.saturating_add(area.height.saturating_sub(2)),
+    ];
+    for (text, y) in y_labels.into_iter().zip(label_rows) {
+        if label_width > 0 && y < area.y.saturating_add(area.height) {
+            f.render_widget(
+                Paragraph::new(text).style(Style::default().fg(axis_color)),
+                Rect::new(label_x, y, label_width, 1),
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
