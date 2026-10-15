@@ -3182,25 +3182,46 @@ fn render_line_canvas(
             format!("{v:.0}")
         }
     };
-    let mid_raw = if log_y {
-        ((y_lo.max(1.0)) * y_hi_raw).sqrt()
-    } else {
-        (y_lo + y_hi_raw) / 2.0
-    };
-    let y_labels = [lbl(y_hi_raw), lbl(mid_raw), lbl(y_lo)];
     let label_x = area.x.saturating_add(1);
     let label_width = area.width.saturating_sub(2);
-    let label_rows = [
-        area.y.saturating_add(1),
-        area.y.saturating_add(area.height.saturating_sub(1) / 2),
-        area.y.saturating_add(area.height.saturating_sub(2)),
-    ];
-    for (text, y) in y_labels.into_iter().zip(label_rows) {
-        if label_width > 0 && y < area.y.saturating_add(area.height) {
+    let inner_top = area.y.saturating_add(1);
+    let inner_height = area.height.saturating_sub(2);
+    let y_range = (y_hi_t - y_lo_t).max(1e-9);
+    let y_ticks: Vec<(String, f64)> = if log_y {
+        let geo_mid = ((y_lo.max(1.0)) * y_hi_raw).sqrt();
+        vec![
+            (lbl(y_hi_raw), y_hi_t),
+            (lbl(geo_mid), ty(geo_mid)),
+            (lbl(y_lo), y_lo_t),
+        ]
+    } else {
+        let step = pick_y_tick_step(y_hi_raw, y_humanize);
+        let last = (y_hi_raw / step).floor() * step;
+        let mut ticks = Vec::new();
+        let mut value = y_lo;
+        while value <= last + step * 1e-6 {
+            ticks.push((lbl(value), ty(value)));
+            value += step;
+        }
+        if ticks.is_empty() {
+            ticks.push((lbl(y_lo), y_lo_t));
+        }
+        ticks
+    };
+    let mut last_row = None;
+    for (text, transformed_value) in y_ticks {
+        let row_offset = (((y_hi_t - transformed_value) / y_range)
+            * f64::from(inner_height.saturating_sub(1)))
+        .round() as u16;
+        let y = inner_top
+            .saturating_add(row_offset)
+            .min(inner_top.saturating_add(inner_height.saturating_sub(1)));
+        if label_width > 0 && inner_height > 0 && last_row != Some(y) {
             f.render_widget(
                 Paragraph::new(text).style(Style::default().fg(axis_color)),
                 Rect::new(label_x, y, label_width, 1),
             );
+            last_row = Some(y);
         }
     }
 }
@@ -3225,21 +3246,41 @@ fn shorten_id(id: &str, vcpu_count: Option<u32>) -> String {
     }
 }
 
-/// Compact number formatter: "12.3k" / "4.5M" / "678".
+/// Compact whole-number formatter: "12k" / "5M" / "678".
 fn humanize(v: f64) -> String {
     if v.is_nan() || v <= 0.0 {
         return "0".into();
     }
     if v >= 1.0e6 {
-        format!("{:.1}M", v / 1.0e6)
+        format!("{:.0}M", v / 1.0e6)
     } else if v >= 1.0e4 {
         // "> 10k switch to thousands" per the user request:
         // once the plot hits 5-digit territory, kilos are the
         // more readable unit.
-        format!("{:.1}k", v / 1.0e3)
+        format!("{:.0}k", v / 1.0e3)
     } else {
         format!("{v:.0}")
     }
+}
+
+/// Pick a conventional 1/2/5 x 10^n Y-axis interval.
+fn pick_y_tick_step(max: f64, whole_units: bool) -> f64 {
+    if !max.is_finite() || max <= 0.0 {
+        return 1.0;
+    }
+    let target = (max / 6.0).max(if whole_units { 1.0 } else { f64::MIN_POSITIVE });
+    let magnitude = 10.0_f64.powf(target.log10().floor());
+    let normalized = target / magnitude;
+    let multiple = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    (multiple * magnitude).max(if whole_units { 1.0 } else { 0.0 })
 }
 
 /// Pick a "nice" X-axis tick interval (in seconds) for a
