@@ -342,7 +342,7 @@ struct Theme {
     background: Color,
 }
 
-/// Built-in themes. `THEMES[0]` is the startup default.
+/// Built-in themes. The light theme is the startup default.
 const THEMES: &[Theme] = &[
     Theme {
         name: "dark",
@@ -1095,7 +1095,7 @@ impl UiState {
             sticky_mode: false,
             show_help: false,
             input_prompt: None,
-            theme_idx: 0,
+            theme_idx: 1,
             columns,
             column_picker: None,
             log_y_scale: false,
@@ -2174,7 +2174,7 @@ fn draw_title(
         // bar top-to-bottom during a live incident do not need
         // to see the palette; if they want to check which theme
         // they are on, the help overlay (`h`) still lists it.
-        Span::styled(paused, Style::default().fg(Color::Yellow)),
+        Span::styled(paused, Style::default().fg(ui.theme().accent)),
         Span::styled(
             if ui.sticky_mode { " [STICKY]" } else { "" },
             Style::default().fg(ui.theme().accent),
@@ -2334,6 +2334,7 @@ fn draw_perf_plot(
         /* y_humanize= */ ui.perf_metric == PerfMetric::Iops,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Perf).copied(),
         ui.wall_clock_x,
@@ -2470,6 +2471,7 @@ fn draw_latency_plot(
         /* y_humanize= */ true,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Latency).copied(),
         ui.wall_clock_x,
@@ -2534,6 +2536,7 @@ fn draw_cpu_plot(
         /* y_humanize= */ false,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::Cpu).copied(),
         ui.wall_clock_x,
@@ -2596,6 +2599,7 @@ fn draw_qd_plot(
         /* y_humanize= */ true,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::QueueDepth).copied(),
         ui.wall_clock_x,
@@ -2665,6 +2669,7 @@ fn draw_cpu_per_iop_plot(
         /* y_humanize= */ false,
         &hi,
         ui.theme().axis,
+        ui.theme().background,
         ui.log_y_scale,
         ui.y_max_override.get(&PlotKind::CpuPerIop).copied(),
         ui.wall_clock_x,
@@ -2884,6 +2889,7 @@ fn render_line_canvas(
     // clusters.
     highlight: &[usize],
     axis_color: Color,
+    background: Color,
     // Log-scale flag.  When on, every series y-value is
     // transformed by `log10(v+1)` before painting and the
     // Y-axis labels are still shown as raw (linear) values so
@@ -2964,6 +2970,7 @@ fn render_line_canvas(
 
     let canvas = Canvas::default()
         .block(block)
+        .background_color(background)
         .marker(Marker::Braille)
         .x_bounds([x_lo, x_hi])
         .y_bounds([y_lo_t, y_hi_t])
@@ -2996,7 +3003,7 @@ fn render_line_canvas(
             // own line colour rides on `bg` so the operator
             // can trace an annotation back to its line even
             // when several lines cluster inside one cell.
-            for (color, list) in &annots {
+            for (_, list) in &annots {
                 for (t, old_n, new_n, y) in list {
                     let (arrow_color, marker_text) = if new_n >= old_n {
                         (Color::Green, format!("{old_n}→{new_n}"))
@@ -3010,7 +3017,6 @@ fn render_line_canvas(
                             marker_text,
                             Style::default()
                                 .fg(arrow_color)
-                                .bg(*color)
                                 .add_modifier(Modifier::BOLD),
                         )),
                     );
