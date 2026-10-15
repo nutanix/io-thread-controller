@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
     config::{self, ConfigError},
-    instance::{Instance, InstanceClient},
+    instance::{Instance, InstanceClient, ThreadNameFilter},
     util::Path,
 };
 
@@ -153,10 +153,7 @@ impl Backend for QemuBackend {
     /// in a generic [`Instance`] whose wire client is a
     /// [`client::QemuInstanceClient`].  We seed
     /// [`Instance::pid`] with libvirt's per-VM pidfile so the
-    /// engine's cgroup / procfs sampling kicks in immediately;
-    /// the QEMU backend still supplies its own per-thread util on
-    /// every snapshot so the /proc walker's thread-name filter is
-    /// never consulted for this transport.
+    /// controller's cgroup and procfs sampling kicks in immediately.
     async fn discover(&self) -> Vec<Arc<Instance>> {
         let conn = match self.get_or_open_conn(&self.cfg.libvirt_uri).await {
             Some(c) => c,
@@ -208,12 +205,12 @@ impl Backend for QemuBackend {
             // it is purely informational (log context), so we
             // stuff the libvirt URI in there.
             let sock_path = Path::new(&self.cfg.libvirt_uri);
-            out.push(Arc::new(Instance::new(
-                uuid.to_string(),
-                sock_path,
-                pid,
-                client,
-            )));
+            let filter = ThreadNameFilter::new("^IO iothread", &[])
+                .expect("static QEMU IOThread regex must compile");
+            out.push(Arc::new(
+                Instance::new(uuid.to_string(), sock_path, pid, client)
+                    .with_thread_name_filter(filter),
+            ));
         }
         out
     }
