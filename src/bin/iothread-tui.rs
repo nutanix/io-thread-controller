@@ -3051,6 +3051,63 @@ fn render_line_canvas(
                     );
                 }
             }
+            // Y-axis labels: place at min/mid/max of the
+            // *transformed* range so they land on the correct
+            // rows, but display the *raw* value they map back
+            // to.  In linear mode the mid is the arithmetic
+            // mean of y_lo/y_hi_raw; in log mode we snap
+            // labels to friendly decades between the range
+            // ends so the reader gets a "10 / 100 / 1k"
+            // spread instead of odd non-round numbers.
+            let lbl = |v: f64| -> String {
+                if y_humanize {
+                    humanize(v)
+                } else {
+                    format!("{v:.0}")
+                }
+            };
+            // Canvas clips text placed exactly on the left x bound. Keep the
+            // Y labels one screen column inside the plot so their numbers
+            // remain visible.
+            let y_label_x = x_lo + (x_hi - x_lo) / f64::from(area.width.max(1));
+            if log_y {
+                // In log mode we want the three shown values
+                // to be evenly spaced *on the log axis*.  Pick
+                // `y_lo`, geometric-mid, `y_hi_raw`.
+                let geo_mid = ((y_lo.max(1.0)) * y_hi_raw).sqrt();
+                ctx.print(
+                    y_label_x,
+                    y_hi_t,
+                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
+                );
+                ctx.print(
+                    y_label_x,
+                    ty(geo_mid),
+                    Line::from(Span::styled(lbl(geo_mid), Style::default().fg(axis_color))),
+                );
+                ctx.print(
+                    y_label_x,
+                    y_lo_t,
+                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
+                );
+            } else {
+                let mid_raw = (y_lo + y_hi_raw) / 2.0;
+                ctx.print(
+                    y_label_x,
+                    y_hi_t,
+                    Line::from(Span::styled(lbl(y_hi_raw), Style::default().fg(axis_color))),
+                );
+                ctx.print(
+                    y_label_x,
+                    ty(mid_raw),
+                    Line::from(Span::styled(lbl(mid_raw), Style::default().fg(axis_color))),
+                );
+                ctx.print(
+                    y_label_x,
+                    y_lo_t,
+                    Line::from(Span::styled(lbl(y_lo), Style::default().fg(axis_color))),
+                );
+            }
             // X-axis timestamps.  Two labels: the left-hand
             // edge of the window and the right-hand edge.  The
             // rendering mode is bool-flag driven: elapsed
