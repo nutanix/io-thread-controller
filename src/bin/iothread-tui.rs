@@ -3182,27 +3182,94 @@ fn render_line_canvas(
             format!("{v:.0}")
         }
     };
-    let mid_raw = if log_y {
-        ((y_lo.max(1.0)) * y_hi_raw).sqrt()
-    } else {
-        (y_lo + y_hi_raw) / 2.0
-    };
-    let y_labels = [lbl(y_hi_raw), lbl(mid_raw), lbl(y_lo)];
     let label_x = area.x.saturating_add(1);
     let label_width = area.width.saturating_sub(2);
-    let label_rows = [
-        area.y.saturating_add(1),
-        area.y.saturating_add(area.height.saturating_sub(1) / 2),
-        area.y.saturating_add(area.height.saturating_sub(2)),
-    ];
-    for (text, y) in y_labels.into_iter().zip(label_rows) {
-        if label_width > 0 && y < area.y.saturating_add(area.height) {
-            f.render_widget(
-                Paragraph::new(text).style(Style::default().fg(axis_color)),
-                Rect::new(label_x, y, label_width, 1),
-            );
+    let inner_top = area.y.saturating_add(1);
+    let inner_height = area.height.saturating_sub(2);
+    let y_range = (y_hi_t - y_lo_t).max(1e-9);
+    let y_ticks: Vec<(f64, bool)> = if log_y {
+        let geo_mid = ((y_lo.max(1.0)) * y_hi_raw).sqrt();
+        vec![(y_hi_raw, true), (geo_mid, true), (y_lo, true)]
+    } else {
+        y_axis_ticks(
+            y_lo,
+            y_hi_raw,
+            f64::from(inner_height.saturating_sub(1)),
+            y_humanize,
+        )
+    };
+    // Primary ticks come first so they win any row collision.
+    let mut used_rows = Vec::new();
+    for (value, primary) in y_ticks {
+        let row_offset = (((y_hi_t - ty(value)) / y_range)
+            * f64::from(inner_height.saturating_sub(1)))
+        .round() as u16;
+        let y = inner_top
+            .saturating_add(row_offset)
+            .min(inner_top.saturating_add(inner_height.saturating_sub(1)));
+        if label_width == 0 || inner_height == 0 || used_rows.contains(&y) {
+            continue;
         }
+        let style = if primary {
+            Style::default().fg(axis_color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(axis_color)
+        };
+        f.render_widget(
+            Paragraph::new(lbl(value)).style(style),
+            Rect::new(label_x, y, label_width, 1),
+        );
+        used_rows.push(y);
     }
+}
+
+/// Linear Y-axis ticks as `(value, is_primary)`, primaries first.
+///
+/// Secondary ticks subdivide each primary interval only when every
+/// sub-interval spans at least two terminal rows and every resulting label
+/// renders exactly, since labels carry no decimals.
+fn y_axis_ticks(y_lo: f64, y_hi: f64, rows: f64, humanized: bool) -> Vec<(f64, bool)> {
+    const MIN_ROWS_PER_TICK: f64 = 2.0;
+
+    let step = pick_y_tick_step(y_hi, humanized);
+    let count = ((y_hi - y_lo) / step + 1e-6).floor().max(0.0) as u64;
+    let mut ticks: Vec<(f64, bool)> = (0..=count)
+        .map(|i| (y_lo + step * i as f64, true))
+        .collect();
+
+    let rows_per_step = rows * step / (y_hi - y_lo).max(1e-9);
+    let subdivisions = [10_u64, 5, 2].into_iter().find(|&d| {
+        let sub = step / d as f64;
+        rows_per_step / d as f64 >= MIN_ROWS_PER_TICK
+            && (1..)
+                .map(|i| y_lo + sub * i as f64)
+                .take_while(|v| *v <= y_hi + sub * 1e-6)
+                .all(|v| label_is_exact(v, humanized))
+    });
+    if let Some(d) = subdivisions {
+        let sub = step / d as f64;
+        ticks.extend(
+            (1..)
+                .filter(|i| i % d != 0)
+                .map(|i| y_lo + sub * i as f64)
+                .take_while(|v| *v <= y_hi + sub * 1e-6)
+                .map(|v| (v, false)),
+        );
+    }
+    ticks
+}
+
+/// Whether `v` renders without rounding through the Y-axis label formatter.
+fn label_is_exact(v: f64, humanized: bool) -> bool {
+    let unit = if !humanized || v < 1.0e4 {
+        1.0
+    } else if v < 1.0e6 {
+        1.0e3
+    } else {
+        1.0e6
+    };
+    let scaled = v / unit;
+    (scaled - scaled.round()).abs() < 1e-6
 }
 
 // ---------------------------------------------------------------------------
@@ -3225,21 +3292,41 @@ fn shorten_id(id: &str, vcpu_count: Option<u32>) -> String {
     }
 }
 
-/// Compact number formatter: "12.3k" / "4.5M" / "678".
+/// Compact whole-number formatter: "12k" / "5M" / "678".
 fn humanize(v: f64) -> String {
     if v.is_nan() || v <= 0.0 {
         return "0".into();
     }
     if v >= 1.0e6 {
-        format!("{:.1}M", v / 1.0e6)
+        format!("{:.0}M", v / 1.0e6)
     } else if v >= 1.0e4 {
         // "> 10k switch to thousands" per the user request:
         // once the plot hits 5-digit territory, kilos are the
         // more readable unit.
-        format!("{:.1}k", v / 1.0e3)
+        format!("{:.0}k", v / 1.0e3)
     } else {
         format!("{v:.0}")
     }
+}
+
+/// Pick a conventional 1/2/5 x 10^n Y-axis interval.
+fn pick_y_tick_step(max: f64, whole_units: bool) -> f64 {
+    if !max.is_finite() || max <= 0.0 {
+        return 1.0;
+    }
+    let target = (max / 6.0).max(if whole_units { 1.0 } else { f64::MIN_POSITIVE });
+    let magnitude = 10.0_f64.powf(target.log10().floor());
+    let normalized = target / magnitude;
+    let multiple = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    (multiple * magnitude).max(if whole_units { 1.0 } else { 0.0 })
 }
 
 /// Pick a "nice" X-axis tick interval (in seconds) for a
@@ -3465,5 +3552,53 @@ async fn main() -> Result<()> {
     sampler.abort();
     match ui_result? {
         UiExit::Quit => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn values(ticks: &[(f64, bool)], primary: bool) -> Vec<f64> {
+        let mut v: Vec<f64> = ticks
+            .iter()
+            .filter(|(_, p)| *p == primary)
+            .map(|(v, _)| *v)
+            .collect();
+        v.sort_by(f64::total_cmp);
+        v
+    }
+
+    /// Test that a short pane gets primary ticks only.
+    #[test]
+    fn y_ticks_without_room_are_primary_only() {
+        let ticks = y_axis_ticks(0.0, 115_000.0, 6.0, true);
+        assert_eq!(
+            values(&ticks, true),
+            vec![0.0, 20_000.0, 40_000.0, 60_000.0, 80_000.0, 100_000.0]
+        );
+        assert!(values(&ticks, false).is_empty());
+    }
+
+    /// Test that a tall pane subdivides each primary interval.
+    #[test]
+    fn y_ticks_with_room_add_secondary_ticks() {
+        let ticks = y_axis_ticks(0.0, 115_000.0, 40.0, true);
+        assert_eq!(
+            values(&ticks, false),
+            vec![10_000.0, 30_000.0, 50_000.0, 70_000.0, 90_000.0, 110_000.0]
+        );
+    }
+
+    /// Test that secondary ticks never need decimals in humanized labels.
+    #[test]
+    fn y_ticks_skip_subdivisions_that_need_decimals() {
+        // Primary step is 5k and there is room for tenths, but 10.5k would
+        // render as "11k", so the axis falls back to fifths (1k).
+        let ticks = y_axis_ticks(0.0, 30_000.0, 300.0, true);
+        let secondary = values(&ticks, false);
+        assert!(secondary.contains(&1_000.0));
+        assert!(!secondary.contains(&500.0));
+        assert!(secondary.iter().all(|v| label_is_exact(*v, true)));
     }
 }
