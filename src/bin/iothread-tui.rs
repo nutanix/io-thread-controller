@@ -829,7 +829,7 @@ async fn sampler_loop(shared: Arc<Shared>, cli: Cli) {
 
 /// UI focus: which row (if any) the operator has selected.
 /// `Total` is a pseudo-row that appears in the focus cycle
-/// only when there are >=2 vms -- selecting it does not
+/// only while the aggregate line is drawn -- selecting it does not
 /// enable `+`/`-` (broadcasting to every VM is almost always
 /// a mistake) but it does highlight the grey aggregate line
 /// in every plot pane, which is the operationally interesting
@@ -1032,6 +1032,9 @@ struct UiState {
     /// True while the operator is looking at the help overlay.
     /// Any key press dismisses it.
     show_help: bool,
+    /// Draw the fleet-wide aggregate line in the plot panes.
+    /// Toggled by `a`; off by default.
+    show_aggregate: bool,
     /// Active modal input prompt, if any.  See
     /// [`InputPrompt`].
     input_prompt: Option<InputPrompt>,
@@ -1103,6 +1106,7 @@ impl UiState {
             paused_t_frozen: None,
             sticky_mode: false,
             show_help: false,
+            show_aggregate: false,
             input_prompt: None,
             theme_idx: 1,
             columns,
@@ -1140,6 +1144,21 @@ impl UiState {
     fn vm_color(&self, color_idx: usize) -> Color {
         let p = self.theme().palette;
         p[color_idx % p.len()]
+    }
+
+    /// Whether plot panes draw the aggregate line for `vm_count` VMs.
+    /// With a single VM the aggregate is identical to that VM's trace.
+    fn plots_aggregate(&self, vm_count: usize) -> bool {
+        self.show_aggregate && vm_count >= 2
+    }
+
+    /// Toggle the aggregate line, dropping a `Total` focus that would
+    /// otherwise point at a line no longer drawn.
+    fn toggle_aggregate(&mut self) {
+        self.show_aggregate = !self.show_aggregate;
+        if !self.show_aggregate && self.focused == Some(Focus::Total) {
+            self.focused = None;
+        }
     }
 
     fn toggle_plot(&mut self, k: PlotKind) {
@@ -1380,6 +1399,7 @@ async fn handle_key(
             ui.column_picker = Some(ColumnPicker { cursor: 0 });
         }
         KeyCode::Char('t') => cycle_theme(ui),
+        KeyCode::Char('a') => ui.toggle_aggregate(),
         KeyCode::Char('s') => ui.sticky_mode = !ui.sticky_mode,
         KeyCode::Char('1') => ui.toggle_plot(PlotKind::Perf),
         KeyCode::Char('2') => ui.toggle_plot(PlotKind::Latency),
@@ -1826,17 +1846,17 @@ async fn move_focus(ui: &mut UiState, shared: &Shared, delta: i32) {
         ui.focused = None;
         return;
     }
-    // Total is a slot only when there is more than one
-    // vm -- with a single tracked vm the aggregate
-    // and the vm trace are literally identical.
-    let slots = if n >= 2 { n + 1 } else { n } as i32;
+    // Total is a slot only while the aggregate line is drawn,
+    // since highlighting that line is all it does.
+    let total_slot = ui.plots_aggregate(n);
+    let slots = if total_slot { n + 1 } else { n } as i32;
     let cur = match &ui.focused {
         Some(Focus::Vm(id)) => ids.iter().position(|i| i == id).unwrap_or(0) as i32,
         Some(Focus::Total) => n as i32,
         None => 0,
     };
     let next = (cur + delta).rem_euclid(slots) as usize;
-    ui.focused = if n >= 2 && next == n {
+    ui.focused = if total_slot && next == n {
         Some(Focus::Total)
     } else {
         Some(Focus::Vm(ids[next].clone()))
@@ -2124,6 +2144,7 @@ fn draw_help_overlay(f: &mut ratatui::Frame, ui: &UiState) {
         Line::from("  r                  prompt for refresh cadence in seconds"),
         Line::from("  c                  toggle dashboard columns"),
         Line::from("  t                  cycle theme (dark/light)"),
+        Line::from("  a                  toggle the aggregate (sum of all vms) plot line"),
         Line::from("  1 2 3 4 5          toggle perf / latency / cpu / qd / us-per-iop panes"),
         Line::from("  ↑ / k              focus previous vm (hides others)"),
         Line::from("  ↓ / j              focus next vm (last slot = TOTAL)"),
@@ -2213,7 +2234,7 @@ fn draw_title(
         ),
         Span::raw("   "),
         Span::styled(
-            "[h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme 12345 plots ↑↓ focus s+/- threads",
+            "[h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme [a]ggregate 12345 plots ↑↓ focus s+/- threads",
             Style::default().fg(ui.theme().axis),
         ),
     ]);
@@ -2262,7 +2283,7 @@ fn draw_plots(
 }
 
 /// Perf pane: one line per vm in the perf metric, a grey
-/// aggregate line when >=2 vms, and text annotations
+/// aggregate line when enabled with >=2 vms, and text annotations
 /// `"<old>→<new>"` at every scale event (green up, red down).
 fn draw_perf_plot(
     f: &mut ratatui::Frame,
@@ -2286,7 +2307,7 @@ fn draw_perf_plot(
     let mut y_max = 1.0_f64;
     let mut annots_by_vm: Vec<AnnotSeries> = Vec::new();
 
-    if snap.vms.len() >= 2 && !snap.aggregate.is_empty() {
+    if ui.plots_aggregate(snap.vms.len()) {
         let mut line = Vec::with_capacity(snap.aggregate.len());
         for s in &snap.aggregate {
             if s.t < x_lo {
@@ -2386,7 +2407,7 @@ fn draw_perf_plot(
 /// indices) the perf / CPU / QD panes should render with the
 /// "thick" stroke.  Series order in each of those panes is:
 ///
-///   * `[0]`        = aggregate (grey), when there are >=2 vms.  Drawn first so
+///   * `[0]`        = aggregate (grey), when enabled with >=2 vms.  Drawn first so
 ///     per-VM lines overpaint it, keeping the vm hue visible even when the
 ///     aggregate trace overlaps.
 ///   * `[base..]`   = per-VM lines, in `snap.vms` order, where `base = 1` when
@@ -2396,7 +2417,7 @@ fn draw_perf_plot(
 /// aggregate is being plotted; a focused vm at position `i`
 /// in `snap.vms` highlights `base + i`.
 fn highlight_indices_perf(ui: &UiState, snap: &RenderSnapshot) -> Vec<usize> {
-    let agg = snap.vms.len() >= 2;
+    let agg = ui.plots_aggregate(snap.vms.len());
     let base = if agg { 1 } else { 0 };
     if let Some(i) = snap.focused_vm_index(ui.focused.as_ref()) {
         return vec![base + i];
@@ -2536,7 +2557,7 @@ fn draw_cpu_plot(
     // Aggregate first (see `draw_perf_plot` for the rationale).
     let mut series: Vec<(Color, Vec<(f64, f64)>)> = Vec::new();
     let mut y_max = 100.0_f64;
-    if snap.vms.len() >= 2 {
+    if ui.plots_aggregate(snap.vms.len()) {
         let mut line = Vec::with_capacity(snap.aggregate.len());
         for s in &snap.aggregate {
             if s.t < x_lo {
@@ -2599,7 +2620,7 @@ fn draw_qd_plot(
     // Aggregate first (see `draw_perf_plot` for the rationale).
     let mut series: Vec<(Color, Vec<(f64, f64)>)> = Vec::new();
     let mut y_max = 1.0_f64;
-    if snap.vms.len() >= 2 {
+    if ui.plots_aggregate(snap.vms.len()) {
         let mut line = Vec::with_capacity(snap.aggregate.len());
         for s in &snap.aggregate {
             if s.t < x_lo {
@@ -2666,7 +2687,7 @@ fn draw_cpu_per_iop_plot(
     // Aggregate first (see `draw_perf_plot` for the rationale).
     let mut series: Vec<(Color, Vec<(f64, f64)>)> = Vec::new();
     let mut y_max = 1.0_f64;
-    if snap.vms.len() >= 2 {
+    if ui.plots_aggregate(snap.vms.len()) {
         let mut line = Vec::with_capacity(snap.aggregate.len());
         for s in &snap.aggregate {
             if s.t < x_lo {

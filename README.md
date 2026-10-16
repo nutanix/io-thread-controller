@@ -330,7 +330,7 @@ it never sees a backend directly.
 ### Layout
 
 ```
-iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=dark   [h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme 12345 plots ↑↓ focus s+/- threads
+iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=dark   [h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme [a]ggregate 12345 plots ↑↓ focus s+/- threads
 ┌── perf (IOPS @ 4 KiB)   y=200k ───────────────────────────────────────┐
 │                          4→5                                          │
 │         ╭╮        ╭─╮  ┌─╯          ╭─────                            │
@@ -369,9 +369,10 @@ iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=dark   [h]elp [q]uit [m]
 
 * Per-VM traces are colour-cycled through the palette so
   overlapping lines stay legible.  When at least **two**
-  vms are tracked, a grey **aggregate** line joins each
-  plot (sum across every live vm), and a bold **TOTAL**
-  row is appended to the dashboard.
+  vms are tracked, a bold **TOTAL** row is appended to the
+  dashboard, and `a` toggles a grey **aggregate** line
+  (sum across every live vm) in each plot; it is off by
+  default.
 
 * **Scale events** on the perf pane render as bold text
   `"<old>→<new>"` — green for scale-ups, red for scale-downs
@@ -422,9 +423,10 @@ iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=dark   [h]elp [q]uit [m]
 | `r`                     | Prompt for a new refresh cadence in ms (50 – 60 000)      |
 | `c`                     | Open dashboard-columns modal (Space/Enter toggle, ↑↓ move, `c`/`Esc` close) |
 | `t`                     | Cycle theme (dark / light)                          |
+| `a`                     | Toggle the aggregate plot line (off by default)     |
 | `1` / `2` / `3` / `4` / `5` | Toggle the perf / lat / cpu / qd / cpu-per-iop pane   |
 | `↑`, `k`                | Focus previous vm — **hides every other line**        |
-| `↓`, `j`                | Focus next vm; last slot is `TOTAL` when >=2          |
+| `↓`, `j`                | Focus next vm; last slot is `TOTAL` while the aggregate line is shown |
 | `Esc`                   | Clear focus (repaint every vm)                        |
 | `+`, `=`                | Ask the daemon to add one thread to the focused vm     |
 | `-`, `_`                | Ask the daemon to remove one thread from the focused vm |
@@ -453,7 +455,7 @@ own bindings and they never reach the TUI reliably.
 
 **Focus hides every other line.**  With no focus, every
 vm draws.  Once you focus a vm (`↑`/`↓`, or select
-`TOTAL` on a >=2-vm fleet) the plots repaint with only
+`TOTAL` on a >=2-vm fleet with the aggregate line shown) the plots repaint with only
 the highlighted line(s) — the plot becomes a solo view of the
 thing you are tracking.  `Esc` clears focus and brings every
 line back.  `+` / `-` are ignored on `TOTAL` because
