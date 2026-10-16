@@ -140,6 +140,15 @@ A scale-up is reverted unless IOPS gained at least
 `scale_down_revert_drop_percent`. Setting either percentage to zero disables
 that direction's validation.
 
+Repeated failures back off per VM. After a reverted scale-up, scale-up is
+blocked for `post_revert_up_grace_polls` plus `post_revert_up_recovery_polls`;
+that hold doubles with each consecutive failed scale-up, up to
+`post_revert_up_backoff_max_polls`. After a reverted scale-down, the next
+scale-down needs `scale_down_sustain_polls` low-utilisation polls doubled once
+per consecutive failure, up to `scale_down_backoff_max_polls`. A kept action
+resets its direction's backoff, as does an applied action in the opposite
+direction. Setting a maximum to zero disables that direction's backoff.
+
 ## QEMU backend
 
 The QEMU backend discovers active VMs through libvirt and sends QMP commands
