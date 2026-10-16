@@ -477,9 +477,9 @@ async fn poll_daemon(daemon: &zbus::Proxy<'static>) -> Result<SnapshotPayload> {
 ///
 ///   * VMs in `payload.vms` that we already track stay put and get their
 ///     [`VmState`] refreshed.
-///   * VMs in `payload.vms` we do not track get a fresh [`VmState`] appended
-///     (colour picked from `roster.len()` in the theme-independent palette
-///     slot).
+///   * VMs in `payload.vms` we do not track get a fresh [`VmState`] (colour
+///     picked from `roster.len()` in the theme-independent palette slot), and
+///     the roster is then re-sorted by VM id.
 ///   * VMs in our roster but *not* in the payload accrue a "missing" streak;
 ///     once it crosses [`MISSING_STREAK_DROP`] they are removed.  The streak
 ///     keeps a briefly-flapping backend from wiping every ring buffer on the
@@ -529,6 +529,13 @@ async fn reconcile_with_snapshot(
             let color_idx = roster.len();
             roster.push(Arc::new(RwLock::new(VmState::new(d.id.clone(), color_idx))));
         }
+        let mut keyed = Vec::with_capacity(roster.len());
+        for vm in roster.drain(..) {
+            let id = vm.read().await.id.clone();
+            keyed.push((id, vm));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        roster.extend(keyed.into_iter().map(|(_, vm)| vm));
     }
 
     // Phase 3: drop vms that have been missing from the
@@ -827,9 +834,11 @@ async fn sampler_loop(shared: Arc<Shared>, cli: Cli) {
 /// a mistake) but it does highlight the grey aggregate line
 /// in every plot pane, which is the operationally interesting
 /// bit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Focus {
-    Vm(usize),
+    /// Keyed by VM id rather than roster position, so a roster that is
+    /// re-sorted or shrinks under the cursor never retargets `+`/`-`.
+    Vm(String),
     Total,
 }
 
@@ -1242,6 +1251,16 @@ struct RenderSnapshot {
     daemon_error: Option<String>,
 }
 
+impl RenderSnapshot {
+    /// Position of the focused VM in `vms`, if a VM is focused and present.
+    fn focused_vm_index(&self, focus: Option<&Focus>) -> Option<usize> {
+        match focus {
+            Some(Focus::Vm(id)) => self.vms.iter().position(|d| &d.id == id),
+            _ => None,
+        }
+    }
+}
+
 struct VmRender {
     id: String,
     /// Palette slot; resolved to a concrete [`Color`] in each
@@ -1445,15 +1464,10 @@ fn open_ymax_prompt(ui: &mut UiState) {
 /// at the pseudo-`Total` slot, mirroring the `+`/`-` nudge
 /// semantics.
 async fn open_set_threads_prompt(ui: &mut UiState, shared: &Shared) {
-    let idx = match ui.focused {
-        Some(Focus::Vm(i)) => i,
-        _ => return,
+    let Some(Focus::Vm(focused_id)) = &ui.focused else {
+        return;
     };
-    let target_arc = {
-        let r = shared.vms.read().await;
-        r.get(idx).cloned()
-    };
-    let Some(target) = target_arc else {
+    let Some(target) = find_vm(shared, focused_id).await else {
         return;
     };
     let (id, cur) = {
@@ -1799,7 +1813,15 @@ fn toggle_pause(ui: &mut UiState, shared: &Shared) {
 /// aggregate line can be highlighted the same way any real
 /// vm can.
 async fn move_focus(ui: &mut UiState, shared: &Shared, delta: i32) {
-    let n = shared.vms.read().await.len();
+    let ids: Vec<String> = {
+        let r = shared.vms.read().await;
+        let mut ids = Vec::with_capacity(r.len());
+        for d in r.iter() {
+            ids.push(d.read().await.id.clone());
+        }
+        ids
+    };
+    let n = ids.len();
     if n == 0 {
         ui.focused = None;
         return;
@@ -1808,17 +1830,28 @@ async fn move_focus(ui: &mut UiState, shared: &Shared, delta: i32) {
     // vm -- with a single tracked vm the aggregate
     // and the vm trace are literally identical.
     let slots = if n >= 2 { n + 1 } else { n } as i32;
-    let cur = match ui.focused {
-        Some(Focus::Vm(i)) => i as i32,
+    let cur = match &ui.focused {
+        Some(Focus::Vm(id)) => ids.iter().position(|i| i == id).unwrap_or(0) as i32,
         Some(Focus::Total) => n as i32,
         None => 0,
     };
-    let next = (cur + delta).rem_euclid(slots);
-    ui.focused = if n >= 2 && next as usize == n {
+    let next = (cur + delta).rem_euclid(slots) as usize;
+    ui.focused = if n >= 2 && next == n {
         Some(Focus::Total)
     } else {
-        Some(Focus::Vm(next as usize))
+        Some(Focus::Vm(ids[next].clone()))
     };
+}
+
+/// Look up a tracked VM by id.
+async fn find_vm(shared: &Shared, id: &str) -> Option<Arc<RwLock<VmState>>> {
+    let r = shared.vms.read().await;
+    for d in r.iter() {
+        if d.read().await.id == id {
+            return Some(Arc::clone(d));
+        }
+    }
+    None
 }
 
 /// `+`/`-` hotkey: shift the focused vm's I/O thread count
@@ -1834,15 +1867,10 @@ async fn move_focus(ui: &mut UiState, shared: &Shared, delta: i32) {
 /// clears it (today by nudging again without sticky, which
 /// the daemon interprets as "engine, take it back").
 async fn nudge_thread_count(ui: &mut UiState, shared: &Shared, delta: i32, sticky: bool) {
-    let idx = match ui.focused {
-        Some(Focus::Vm(i)) => i,
-        Some(Focus::Total) | None => return,
+    let Some(Focus::Vm(focused_id)) = &ui.focused else {
+        return;
     };
-    let target_arc = {
-        let r = shared.vms.read().await;
-        r.get(idx).cloned()
-    };
-    let Some(target) = target_arc else {
+    let Some(target) = find_vm(shared, focused_id).await else {
         return;
     };
     let (cur, id) = {
@@ -2321,9 +2349,10 @@ fn draw_perf_plot(
     // vm `i` (no aggregate slot, aggregate has no annots),
     // so filter by vm index rather than the per-plot
     // series index.
-    if let Some(Focus::Vm(fi)) = ui.focused {
+    if matches!(ui.focused, Some(Focus::Vm(_))) {
+        let fi = snap.focused_vm_index(ui.focused.as_ref());
         for (i, (_, list)) in annots_by_vm.iter_mut().enumerate() {
-            if i != fi {
+            if Some(i) != fi {
                 list.clear();
             }
         }
@@ -2364,13 +2393,15 @@ fn draw_perf_plot(
 ///     the aggregate is present and `0` otherwise.
 ///
 /// `Focus::Total` therefore highlights index 0 iff the
-/// aggregate is being plotted; a plain `Focus::Vm(i)`
-/// highlights `base + i`.
+/// aggregate is being plotted; a focused vm at position `i`
+/// in `snap.vms` highlights `base + i`.
 fn highlight_indices_perf(ui: &UiState, snap: &RenderSnapshot) -> Vec<usize> {
     let agg = snap.vms.len() >= 2;
     let base = if agg { 1 } else { 0 };
+    if let Some(i) = snap.focused_vm_index(ui.focused.as_ref()) {
+        return vec![base + i];
+    }
     match ui.focused {
-        Some(Focus::Vm(i)) if i < snap.vms.len() => vec![base + i],
         Some(Focus::Total) if agg => vec![0],
         _ => Vec::new(),
     }
@@ -2384,12 +2415,12 @@ fn highlight_indices_latency(ui: &UiState, snap: &RenderSnapshot) -> Vec<usize> 
     // Latency plot pushes 4 series per vm (read avg,
     // read p99, write avg, write p99); focus therefore lights
     // up a full run of 4.
-    match ui.focused {
-        Some(Focus::Vm(i)) if i < snap.vms.len() => {
+    match snap.focused_vm_index(ui.focused.as_ref()) {
+        Some(i) => {
             let base = 4 * i;
             vec![base, base + 1, base + 2, base + 3]
         }
-        _ => Vec::new(),
+        None => Vec::new(),
     }
 }
 
@@ -2782,7 +2813,7 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
     let mut rows: Vec<Row> = Vec::with_capacity(snap.vms.len() + 1);
     let mut total = LatestStatus::default();
 
-    for (i, d) in snap.vms.iter().enumerate() {
+    for d in &snap.vms {
         let s = &d.status;
         total.thread_count = total.thread_count.saturating_add(s.thread_count);
         total.iops_r += s.iops_r;
@@ -2798,7 +2829,7 @@ fn draw_dashboard(f: &mut ratatui::Frame, area: Rect, ui: &UiState, snap: &Rende
                 .saturating_add(s.qd_total.unwrap_or(0)),
         );
 
-        let focused = ui.focused == Some(Focus::Vm(i));
+        let focused = matches!(&ui.focused, Some(Focus::Vm(id)) if *id == d.id);
         let base = Style::default().fg(ui.vm_color(d.color_idx));
         // Dim the row when the daemon reports the last refresh
         // failed for this instance -- typically means the
