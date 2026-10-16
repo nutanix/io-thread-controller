@@ -8,5 +8,7 @@
   "scale_validation_sample_polls_per_thread": 0,
   "block_scale_up_when_cgroup_throttled": true,
   "post_revert_up_grace_polls": 1,
-  "post_revert_up_recovery_polls": 2
+  "post_revert_up_recovery_polls": 2,
+  "post_revert_up_backoff_max_polls": 30,
+  "scale_down_backoff_max_polls": 120
 }
