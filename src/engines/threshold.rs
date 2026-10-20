@@ -462,6 +462,7 @@ impl ThresholdEngine {
     fn validation_after_secs(&self, scale_poll_secs: f64, target_thread_count: u32) -> f64 {
         // Countdown consumes the effective validation polls, then the next
         // tick performs the comparison.
+        // TODO use Duration
         (f64::from(self.validation_sample_polls(target_thread_count)) + 1.0) * scale_poll_secs
     }
 }
@@ -1230,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_polls_increase_with_target_thread_count() {
+    fn test_validation_polls_increase_with_target_thread_count() {
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_validation_sample_polls: 2,
             scale_validation_sample_polls_per_thread: 3,
