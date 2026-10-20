@@ -330,7 +330,7 @@ it never sees a backend directly.
 ### Layout
 
 ```
- iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=default-dark   [h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme 12345 plots ↑↓ focus s+/- threads
+iothread-tui  IOPS @ 4 KiB  refresh 500ms  vms=3  theme=dark   [h]elp [q]uit [m]etric [p]ause [r]efresh [t]heme 12345 plots ↑↓ focus s+/- threads
 ┌── perf (IOPS @ 4 KiB)   y=200k ───────────────────────────────────────┐
 │                          4→5                                          │
 │         ╭╮        ╭─╮  ┌─╯          ╭─────                            │
@@ -421,7 +421,7 @@ it never sees a backend directly.
 | `p`, `Space`            | Pause: freezes the X-axis *and* the sampler / rediscovery loops |
 | `r`                     | Prompt for a new refresh cadence in ms (50 – 60 000)      |
 | `c`                     | Open dashboard-columns modal (Space/Enter toggle, ↑↓ move, `c`/`Esc` close) |
-| `t`                     | Cycle theme (default-dark / default-light / vim-desert / solarized-dark / gruvbox) |
+| `t`                     | Cycle theme (dark / light)                          |
 | `1` / `2` / `3` / `4` / `5` | Toggle the perf / lat / cpu / qd / cpu-per-iop pane   |
 | `↑`, `k`                | Focus previous vm — **hides every other line**        |
 | `↓`, `j`                | Focus next vm; last slot is `TOTAL` when >=2          |
@@ -465,10 +465,9 @@ behind the glyph, so overlapping annotations across
 close-together lines stay attributable at a glance.
 
 **Themes** (`t` to cycle) swap the per-VM palette, axis
-label colour, and aggregate/accent colours. Five ship: two
-"default" variants tuned for dark and light terminal
-backgrounds, plus vim-desert, solarized-dark, and gruvbox.
-Vm colour assignment is theme-independent, so switching
+label colour, and aggregate/accent colours. Two themes ship:
+`dark` and `light`, both with high-contrast axis and dashboard
+colours. Vm colour assignment is theme-independent, so switching
 themes recolours every trace consistently.
 
 ### Command line
