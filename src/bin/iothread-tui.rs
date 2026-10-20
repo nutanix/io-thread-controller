@@ -2555,8 +2555,8 @@ fn draw_cpu_plot(
     );
 }
 
-/// Queue-depth pane: per-VM `vq_depth_total`, plus an
-/// aggregate when >=2.
+/// Queue-depth pane: per-VM `qd_total`, plus an
+/// aggregate when enabled with >=2 vms.
 fn draw_qd_plot(
     f: &mut ratatui::Frame,
     area: Rect,

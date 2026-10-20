@@ -76,6 +76,9 @@ static MANAGED_IOT_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^iot[0
 static VIRTIO_SCSI_NUM_QUEUES_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^qemu_virtio_scsi_num_queues\{([^}]*)\}\s+([0-9.eE+\-]+)").unwrap()
 });
+static VIRTIO_SCSI_VQ_INFLIGHT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^qemu_virtio_scsi_vq_inflight\{([^}]*)\}\s+([0-9.eE+\-]+)").unwrap()
+});
 
 /// IOThread and virtio-scsi topology parsed from QEMU metrics.
 #[derive(Debug, Default, Clone)]
@@ -88,6 +91,9 @@ pub struct QemuTopology {
     pub device_path: String,
     /// Number of command virtqueues exposed by the device.
     pub vq_count: u16,
+    /// In-flight requests per command virtqueue of the managed device,
+    /// indexed by queue. Empty when QEMU does not export the metric.
+    pub vq_inflight: Vec<u64>,
 }
 
 impl QemuTopology {
@@ -112,8 +118,28 @@ impl QemuTopology {
     // FIXME document body, check unit test
     pub fn new(body: &str) -> Self {
         let mut topo = Self::default();
+        // In-flight depths for every virtio-scsi device, keyed by device then
+        // queue. The managed device is only known once its num_queues line is
+        // seen, which may come after its inflight lines, so buffer them all and
+        // keep just the managed device's entry after the loop.
+        let mut inflight: HashMap<String, BTreeMap<usize, u64>> = HashMap::new();
         for line in body.lines() {
             if line.starts_with('#') {
+                continue;
+            }
+            if let Some(m) = VIRTIO_SCSI_VQ_INFLIGHT_RE.captures(line) {
+                let lbls = Self::parse_qemu_labels(m.get(1).map_or("", |x| x.as_str()));
+                let (Some(device), Some(Ok(vq)), Ok(depth)) = (
+                    lbls.get("device"),
+                    lbls.get("vq").map(|v| v.parse::<usize>()),
+                    m.get(2).unwrap().as_str().parse::<f64>(),
+                ) else {
+                    continue;
+                };
+                inflight
+                    .entry(device.clone())
+                    .or_default()
+                    .insert(vq, depth.max(0.0) as u64);
                 continue;
             }
             if let Some(m) = IOTHREAD_INFO_RE.captures(line) {
@@ -161,6 +187,9 @@ impl QemuTopology {
         if !topo.iothread_tids.is_empty() {
             topo.iothreads = topo.iothread_tids.keys().cloned().collect();
             topo.iothreads.sort();
+        }
+        if let Some(per_vq) = inflight.remove(&topo.device_path) {
+            topo.vq_inflight = per_vq.into_values().collect();
         }
         topo
     }
@@ -328,5 +357,21 @@ qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 4
         assert_eq!(topo.iothread_tids.get("iot0"), Some(&123));
         assert_eq!(topo.device_path, "/machine/peripheral/scsi0");
         assert_eq!(topo.vq_count, 4);
+        assert!(topo.vq_inflight.is_empty());
+    }
+
+    /// Test that per-vq in-flight depths are taken from the managed device
+    /// only, ordered by queue, regardless of where they appear in the body.
+    #[test]
+    fn test_topology_parses_vq_inflight_for_managed_device() {
+        let body = r#"qemu_virtio_scsi_vq_inflight{device="/machine/peripheral/scsi0",vq="1"} 7
+qemu_virtio_scsi_vq_inflight{device="/machine/peripheral/scsi0",vq="0"} 3
+qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 2
+qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi1"} 1
+qemu_virtio_scsi_vq_inflight{device="/machine/peripheral/scsi1",vq="0"} 99
+"#;
+        let topo = QemuTopology::new(body);
+        assert_eq!(topo.device_path, "/machine/peripheral/scsi0");
+        assert_eq!(topo.vq_inflight, vec![3, 7]);
     }
 }

@@ -488,7 +488,7 @@ impl Controller {
             let instance = &self.instances[id];
             let s = instance.status.read().await;
             let cpu_stats = compute_cpu_stats(&s);
-            let (num_queues, derived_qd_total, qd_avg_x100, qd_median) =
+            let (num_queues, qd_total, qd_avg_x100, qd_median) =
                 summarize_vq_depths(s.per_vq_depth.as_deref());
             payload.vms.push(SnapshotVm {
                 id: id.clone(),
@@ -523,7 +523,7 @@ impl Controller {
                 }),
                 num_queues,
                 per_vq_depth: s.per_vq_depth.clone(),
-                qd_total: s.vq_depth_total.or(derived_qd_total),
+                qd_total,
                 qd_avg_x100,
                 qd_median,
                 cpu_pct_avg: Some(cpu_stats.avg_pct),

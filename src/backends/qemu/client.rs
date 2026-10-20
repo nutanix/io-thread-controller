@@ -300,7 +300,7 @@ impl InstanceClient for QemuInstanceClient {
         // across backends.  A best-effort call: an error here
         // shouldn't drop the whole snapshot, so we downgrade to
         // an empty perf sample and log at debug.
-        let perf = match self.client.query_blockstats().await {
+        let mut perf = match self.client.query_blockstats().await {
             Ok(p) => p,
             Err(e) => {
                 tracing::debug!(
@@ -312,6 +312,13 @@ impl InstanceClient for QemuInstanceClient {
                 None
             }
         };
+        // Depth rides on the I/O counters; a counter-less sample would read
+        // as an IOPS drop to zero.
+        if let Some(perf) = perf.as_mut()
+            && !topo.vq_inflight.is_empty()
+        {
+            perf.per_vq_depth = Some(topo.vq_inflight.clone());
+        }
         let thread_count = topo.iothreads.len() as u32;
         Ok(ThreadPoolSnapshot {
             thread_count,
