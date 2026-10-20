@@ -294,15 +294,15 @@ impl InstanceState {
     /// or blocked action must retain the evidence accumulated by the sustain
     /// policy, and subsequent scaling must establish a fresh run.
     fn reset_after_applied(&mut self, action: ScaleAction) {
-        self.low_util_polls = 0;
         match action {
             ScaleAction::Up(_) => self.consecutive_failed_downs = 0,
             ScaleAction::Down(_) => {
                 self.post_revert_up_hold = None;
                 self.consecutive_failed_ups = 0;
             }
-            ScaleAction::None | ScaleAction::Revert(_) => {}
+            ScaleAction::None | ScaleAction::Revert(_) => return,
         }
+        self.low_util_polls = 0;
     }
 
     /// Refresh the baseline-window IOPS rate ending at `end`.
@@ -860,7 +860,8 @@ mod tests {
     use test_log::test;
 
     use super::{
-        PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls, log_performance_revert,
+        InstanceState, PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls,
+        log_performance_revert,
     };
     use crate::{
         backends::BackendClientError,
@@ -1449,6 +1450,45 @@ mod tests {
             .await;
         let state = engine.state.lock().await;
         assert_eq!(state.get(&instance.id).unwrap().consecutive_failed_downs, 0);
+    }
+
+    /// Test that an applied action resets only the evidence for its own
+    /// direction, and that non-scaling actions reset nothing.
+    #[rstest]
+    #[case::up(ScaleAction::Up(4), 0, 2, 0, true)]
+    #[case::down(ScaleAction::Down(2), 0, 0, 3, false)]
+    #[case::none(ScaleAction::None, 5, 2, 3, true)]
+    #[case::revert(ScaleAction::Revert(3), 5, 2, 3, true)]
+    #[tokio::test]
+    async fn test_reset_after_applied(
+        #[future] instance: Arc<Instance>,
+        #[case] action: ScaleAction,
+        #[case] low_util_polls: u32,
+        #[case] consecutive_failed_ups: u32,
+        #[case] consecutive_failed_downs: u32,
+        #[case] post_revert_up_hold: bool,
+    ) {
+        let mut instance_state = InstanceState::new(instance.await);
+        instance_state.low_util_polls = 5;
+        instance_state.consecutive_failed_ups = 2;
+        instance_state.consecutive_failed_downs = 3;
+        instance_state.begin_post_revert_up_hold(1);
+
+        instance_state.reset_after_applied(action);
+
+        assert_eq!(instance_state.low_util_polls, low_util_polls);
+        assert_eq!(
+            instance_state.consecutive_failed_ups,
+            consecutive_failed_ups
+        );
+        assert_eq!(
+            instance_state.consecutive_failed_downs,
+            consecutive_failed_downs
+        );
+        assert_eq!(
+            instance_state.post_revert_up_hold.is_some(),
+            post_revert_up_hold
+        );
     }
 
     /// Test that percent fields serde as human percents on the wire and
