@@ -288,6 +288,23 @@ impl InstanceState {
         self.current_baseline_iops = 0;
     }
 
+    /// Consume the evidence that led to an applied scale action.
+    ///
+    /// Only called once the controller accepted the action; a merely proposed
+    /// or blocked action must retain the evidence accumulated by the sustain
+    /// policy, and subsequent scaling must establish a fresh run.
+    fn reset_after_applied(&mut self, action: ScaleAction) {
+        self.low_util_polls = 0;
+        match action {
+            ScaleAction::Up(_) => self.consecutive_failed_downs = 0,
+            ScaleAction::Down(_) => {
+                self.post_revert_up_hold = None;
+                self.consecutive_failed_ups = 0;
+            }
+            ScaleAction::None | ScaleAction::Revert(_) => {}
+        }
+    }
+
     /// Refresh the baseline-window IOPS rate ending at `end`.
     fn refresh_baseline_rate(&mut self, end: IoSample) -> u64 {
         let rate = match self.baseline_window_start {
@@ -625,6 +642,7 @@ fn log_scale_down_backoff(instance_id: &str, consecutive_failures: u32, sustain_
         "raising scale-down sustain after failed scale-down revert"
     );
 }
+
 #[async_trait]
 impl ScalingEngine for ThresholdEngine {
     fn name(&self) -> &'static str {
@@ -798,47 +816,22 @@ impl ScalingEngine for ThresholdEngine {
             io_count: previous_io_count,
             at: applied_at,
         };
-        match action {
-            ScaleAction::Up(_) if self.cfg.scale_up_min_gain > 0.0 => {
-                // Reset sustain only after the controller accepted the action;
-                // a merely proposed or blocked downscale must retain the
-                // evidence accumulated by the sustain policy.
-                instance_state.low_util_polls = 0;
-                instance_state.consecutive_failed_downs = 0;
-                instance_state.start_validation(
-                    action,
-                    previous_thread_count,
-                    instance_state.current_baseline_iops,
-                    applied,
-                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
-                );
-            }
-            ScaleAction::Down(_) if self.cfg.scale_down_revert_drop > 0.0 => {
-                // Successful actuation consumes the sustained low-utilisation
-                // run; subsequent downscaling must establish a fresh run.
-                instance_state.low_util_polls = 0;
-                instance_state.post_revert_up_hold = None;
-                instance_state.consecutive_failed_ups = 0;
-                instance_state.start_validation(
-                    action,
-                    previous_thread_count,
-                    instance_state.current_baseline_iops,
-                    applied,
-                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
-                );
-            }
-            ScaleAction::Up(_) => {
-                instance_state.low_util_polls = 0;
-                instance_state.consecutive_failed_downs = 0;
-                instance_state.reset_baseline_window(applied);
-            }
-            ScaleAction::Down(_) => {
-                instance_state.low_util_polls = 0;
-                instance_state.post_revert_up_hold = None;
-                instance_state.consecutive_failed_ups = 0;
-                instance_state.reset_baseline_window(applied);
-            }
-            ScaleAction::None | ScaleAction::Revert(_) => {}
+        let validate = match action {
+            ScaleAction::Up(_) => self.cfg.scale_up_min_gain > 0.0,
+            ScaleAction::Down(_) => self.cfg.scale_down_revert_drop > 0.0,
+            ScaleAction::None | ScaleAction::Revert(_) => return,
+        };
+        instance_state.reset_after_applied(action);
+        if validate {
+            instance_state.start_validation(
+                action,
+                previous_thread_count,
+                instance_state.current_baseline_iops,
+                applied,
+                self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
+            );
+        } else {
+            instance_state.reset_baseline_window(applied);
         }
     }
 
@@ -1320,7 +1313,7 @@ mod tests {
     /// Test that backoff doubles from the base, caps at the maximum, never
     /// drops below the base, and is disabled by a zero maximum.
     #[test]
-    fn backoff_polls_doubles_and_caps() {
+    fn test_backoff_polls_doubles_and_caps() {
         let got: Vec<u32> = (0..6).map(|n| backoff_polls(3, n, 30)).collect();
         assert_eq!(got, vec![3, 6, 12, 24, 30, 30]);
         assert_eq!(backoff_polls(3, 100, 30), 30);
@@ -1368,7 +1361,7 @@ mod tests {
     /// that a kept scale-up resets the backoff.
     #[rstest]
     #[tokio::test]
-    async fn failed_scale_ups_back_off_until_kept(#[future] instance: Arc<Instance>) {
+    async fn test_failed_scale_ups_back_off_until_kept(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_up_threshold: 0.8,
@@ -1413,7 +1406,7 @@ mod tests {
     /// requirement up to the cap, and that an applied scale-up resets it.
     #[rstest]
     #[tokio::test]
-    async fn failed_scale_downs_back_off_until_scale_up(#[future] instance: Arc<Instance>) {
+    async fn test_failed_scale_downs_back_off_until_scale_up(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_up_threshold: 0.8,
