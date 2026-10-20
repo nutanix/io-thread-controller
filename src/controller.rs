@@ -10,7 +10,7 @@ use std::{
     fs::{OpenOptions, create_dir_all},
     io::Write,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures_util::future::join_all;
@@ -174,33 +174,6 @@ fn summarize_vq_depths(
     )
     .floor() as u64;
     (Some(count), Some(total), Some(average_x100), Some(median))
-}
-
-/// Format `t` as an RFC 3339 UTC timestamp with millisecond precision,
-/// e.g. `2026-10-16T14:27:03.123Z`.
-fn utc_timestamp(t: SystemTime) -> String {
-    let since_epoch = t.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = since_epoch.as_secs();
-    let (days, secs_of_day) = (secs / 86_400, secs % 86_400);
-
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        secs_of_day / 3_600,
-        secs_of_day % 3_600 / 60,
-        secs_of_day % 60,
-        since_epoch.subsec_millis()
-    )
 }
 
 /// Construct a [`Duration`] from whole minutes.
@@ -1100,7 +1073,7 @@ impl Controller {
         }
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(mut file) => {
-                if let Err(error) = writeln!(file, "{} {line}", utc_timestamp(SystemTime::now())) {
+                if let Err(error) = writeln!(file, "{} {line}", humantime::format_rfc3339_millis(SystemTime::now())) {
                     let mut warned = self
                         .per_vm_log_io_error_warned
                         .lock()
@@ -1226,19 +1199,6 @@ mod tests {
 
     #[cfg(feature = "threshold-engine")]
     use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
-
-    /// Test that per-VM log timestamps render as RFC 3339 UTC, including
-    /// leap days and year boundaries.
-    #[test]
-    fn utc_timestamp_formats_known_instants() {
-        let at = |secs: u64, millis: u64| {
-            utc_timestamp(UNIX_EPOCH + Duration::from_millis(secs * 1_000 + millis))
-        };
-        assert_eq!(at(0, 0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(at(951_782_400, 5), "2000-02-29T00:00:00.005Z");
-        assert_eq!(at(1_798_761_599, 999), "2026-12-31T23:59:59.999Z");
-        assert_eq!(at(1_792_160_823, 123), "2026-10-16T14:27:03.123Z");
-    }
 
     struct VcpuLimitedClient {
         target: Arc<AtomicU32>,
