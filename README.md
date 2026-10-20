@@ -132,10 +132,13 @@ VM. This keeps the controller independent of libvirt, QMP, control sockets, and
 other transport details.
 
 After a successful action, the engine waits
-`scale_validation_sample_polls` complete samples. A scale-up is reverted unless
-IOPS gained at least `scale_up_min_gain_percent`; a scale-down is reverted when
-IOPS lost more than `scale_down_revert_drop_percent`. Setting either percentage
-to zero disables that direction's validation.
+`scale_validation_sample_polls` complete samples. The optional
+`scale_validation_sample_polls_per_thread` setting adds that many samples for
+each thread in the resulting pool, allowing larger pools more time to settle.
+A scale-up is reverted unless IOPS gained at least
+`scale_up_min_gain_percent`; a scale-down is reverted when IOPS lost more than
+`scale_down_revert_drop_percent`. Setting either percentage to zero disables
+that direction's validation.
 
 ## QEMU backend
 

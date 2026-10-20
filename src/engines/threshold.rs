@@ -72,6 +72,9 @@ pub struct ThresholdConfig {
     /// Complete samples to wait before validating a successful action.
     #[serde(default = "default_scale_validation_sample_polls")]
     pub scale_validation_sample_polls: u32,
+    /// Additional validation polls per target thread after a scale action.
+    #[serde(default)]
+    pub scale_validation_sample_polls_per_thread: u32,
     /// Suppress scale-up after the VM's cgroup reports new throttled CPU time.
     #[serde(default = "default_true")]
     pub block_scale_up_when_cgroup_throttled: bool,
@@ -124,6 +127,7 @@ impl Default for ThresholdConfig {
             scale_up_min_gain: default_scale_up_min_gain(),
             scale_down_revert_drop: default_scale_down_revert_drop(),
             scale_validation_sample_polls: default_scale_validation_sample_polls(),
+            scale_validation_sample_polls_per_thread: 0,
             block_scale_up_when_cgroup_throttled: true,
             post_revert_up_grace_polls: default_post_revert_up_grace_polls(),
             post_revert_up_recovery_polls: default_post_revert_up_recovery_polls(),
@@ -368,6 +372,15 @@ impl ThresholdEngine {
         &self.cfg
     }
 
+    /// Return the validation polls for an action's resulting thread count.
+    fn validation_sample_polls(&self, target_thread_count: u32) -> u32 {
+        self.cfg.scale_validation_sample_polls.saturating_add(
+            self.cfg
+                .scale_validation_sample_polls_per_thread
+                .saturating_mul(target_thread_count),
+        )
+    }
+
     /// Calculate the smallest pool that keeps average load at the up threshold.
     fn scale_down_target(
         &self,
@@ -446,10 +459,11 @@ impl ThresholdEngine {
     }
 
     /// Seconds until a post-scale IOPS sample is evaluated.
-    fn validation_after_secs(&self, scale_poll_secs: f64) -> f64 {
-        // Countdown consumes `scale_validation_sample_polls` ticks, then the
-        // next tick performs the comparison.
-        (f64::from(self.cfg.scale_validation_sample_polls) + 1.0) * scale_poll_secs
+    fn validation_after_secs(&self, scale_poll_secs: f64, target_thread_count: u32) -> f64 {
+        // Countdown consumes the effective validation polls, then the next
+        // tick performs the comparison.
+        // TODO use Duration
+        (f64::from(self.validation_sample_polls(target_thread_count)) + 1.0) * scale_poll_secs
     }
 }
 
@@ -635,7 +649,7 @@ impl ScalingEngine for ThresholdEngine {
             let (min_target_iops, validation_after_secs) = if self.cfg.scale_up_min_gain > 0.0 {
                 (
                     ((current_iops as f64) * (1.0 + self.cfg.scale_up_min_gain)).ceil() as u64,
-                    self.validation_after_secs(context.scale_poll_secs),
+                    self.validation_after_secs(context.scale_poll_secs, target),
                 )
             } else {
                 (current_iops, 0.0)
@@ -698,7 +712,7 @@ impl ScalingEngine for ThresholdEngine {
                     previous_thread_count,
                     instance_state.current_baseline_iops,
                     applied,
-                    self.cfg.scale_validation_sample_polls,
+                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
                 );
             }
             ScaleAction::Down(_) if self.cfg.scale_down_revert_drop > 0.0 => {
@@ -711,7 +725,7 @@ impl ScalingEngine for ThresholdEngine {
                     previous_thread_count,
                     instance_state.current_baseline_iops,
                     applied,
-                    self.cfg.scale_validation_sample_polls,
+                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
                 );
             }
             ScaleAction::Up(_) => {
@@ -1214,6 +1228,18 @@ mod tests {
             serde_json::from_str::<ThresholdConfig>(r#"{"scale_up_revert_drop_percent":10}"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_validation_polls_increase_with_target_thread_count() {
+        let engine = ThresholdEngine::new(ThresholdConfig {
+            scale_validation_sample_polls: 2,
+            scale_validation_sample_polls_per_thread: 3,
+            ..Default::default()
+        });
+
+        assert_eq!(engine.validation_sample_polls(1), 5);
+        assert_eq!(engine.validation_sample_polls(4), 14);
     }
 
     /// Test that while a prior scale-up is pending validation, further
