@@ -85,6 +85,15 @@ pub struct ThresholdConfig {
     /// still blocked.
     #[serde(default = "default_post_revert_up_recovery_polls")]
     pub post_revert_up_recovery_polls: u32,
+    /// Cap on the post-revert hold (grace plus recovery), which doubles with
+    /// each consecutive failed scale-up. Zero disables the backoff.
+    #[serde(default = "default_post_revert_up_backoff_max_polls")]
+    pub post_revert_up_backoff_max_polls: u32,
+    /// Cap on the low-utilisation polls required before scale-down, which
+    /// doubles with each consecutive failed scale-down. Zero disables the
+    /// backoff.
+    #[serde(default = "default_scale_down_backoff_max_polls")]
+    pub scale_down_backoff_max_polls: u32,
 }
 
 fn default_scale_up_threshold() -> f64 {
@@ -117,6 +126,22 @@ fn default_post_revert_up_grace_polls() -> u32 {
 fn default_post_revert_up_recovery_polls() -> u32 {
     2
 }
+fn default_post_revert_up_backoff_max_polls() -> u32 {
+    30
+}
+fn default_scale_down_backoff_max_polls() -> u32 {
+    120
+}
+
+/// `base` doubled `doublings` times, capped at `max` (never below `base`).
+/// A zero `max` disables the backoff and returns `base`.
+fn backoff_polls(base: u32, doublings: u32, max: u32) -> u32 {
+    if max == 0 {
+        return base;
+    }
+    base.saturating_mul(2u32.saturating_pow(doublings))
+        .min(max.max(base))
+}
 
 impl Default for ThresholdConfig {
     fn default() -> Self {
@@ -131,6 +156,8 @@ impl Default for ThresholdConfig {
             block_scale_up_when_cgroup_throttled: true,
             post_revert_up_grace_polls: default_post_revert_up_grace_polls(),
             post_revert_up_recovery_polls: default_post_revert_up_recovery_polls(),
+            post_revert_up_backoff_max_polls: default_post_revert_up_backoff_max_polls(),
+            scale_down_backoff_max_polls: default_scale_down_backoff_max_polls(),
         }
     }
 }
@@ -214,6 +241,12 @@ struct InstanceState {
     /// After a failed scale-up revert, suppress further ups through grace then
     /// recovery while a settled baseline is established.
     post_revert_up_hold: Option<PostRevertUpHold>,
+    /// Scale-ups reverted by validation since the last kept scale-up or
+    /// applied scale-down.
+    consecutive_failed_ups: u32,
+    /// Scale-downs reverted by validation since the last kept scale-down or
+    /// applied scale-up.
+    consecutive_failed_downs: u32,
 }
 
 impl InstanceState {
@@ -226,6 +259,8 @@ impl InstanceState {
             baseline_window_start: None,
             current_baseline_iops: 0,
             post_revert_up_hold: None,
+            consecutive_failed_ups: 0,
+            consecutive_failed_downs: 0,
         }
     }
 
@@ -251,6 +286,23 @@ impl InstanceState {
     fn reset_baseline_window(&mut self, start: IoSample) {
         self.baseline_window_start = Some(start);
         self.current_baseline_iops = 0;
+    }
+
+    /// Consume the evidence that led to an applied scale action.
+    ///
+    /// Only called once the controller accepted the action; a merely proposed
+    /// or blocked action must retain the evidence accumulated by the sustain
+    /// policy, and subsequent scaling must establish a fresh run.
+    fn reset_after_applied(&mut self, action: ScaleAction) {
+        match action {
+            ScaleAction::Up(_) => self.consecutive_failed_downs = 0,
+            ScaleAction::Down(_) => {
+                self.post_revert_up_hold = None;
+                self.consecutive_failed_ups = 0;
+            }
+            ScaleAction::None | ScaleAction::Revert(_) => return,
+        }
+        self.low_util_polls = 0;
     }
 
     /// Refresh the baseline-window IOPS rate ending at `end`.
@@ -458,6 +510,29 @@ impl ThresholdEngine {
         Some(pending.baseline_thread_count)
     }
 
+    /// Grace polls for the post-revert hold after `failures` consecutive
+    /// failed scale-ups. The backoff extends grace so the recovery baseline
+    /// window keeps its configured length.
+    fn post_revert_up_grace_polls(&self, failures: u32) -> u32 {
+        let recovery = self.cfg.post_revert_up_recovery_polls;
+        let hold = backoff_polls(
+            self.cfg.post_revert_up_grace_polls.saturating_add(recovery),
+            failures.saturating_sub(1),
+            self.cfg.post_revert_up_backoff_max_polls,
+        );
+        hold.saturating_sub(recovery)
+    }
+
+    /// Low-utilisation polls required before scale-down after `failures`
+    /// consecutive failed scale-downs.
+    fn scale_down_sustain_polls(&self, failures: u32) -> u32 {
+        backoff_polls(
+            self.cfg.scale_down_sustain_polls,
+            failures,
+            self.cfg.scale_down_backoff_max_polls,
+        )
+    }
+
     /// Seconds until a post-scale IOPS sample is evaluated.
     fn validation_after_secs(&self, scale_poll_secs: f64, target_thread_count: u32) -> f64 {
         // Countdown consumes the effective validation polls, then the next
@@ -538,16 +613,36 @@ fn log_scale_down_decision(
 }
 
 /// Announce that scale-up is held after a failed-up revert.
-fn log_post_revert_up_hold(instance_id: &str, grace_polls: u32, recovery_polls: u32) {
+fn log_post_revert_up_hold(
+    instance_id: &str,
+    consecutive_failures: u32,
+    grace_polls: u32,
+    recovery_polls: u32,
+) {
     tracing::info!(
         target: "engine",
         event = "post_revert_up_hold",
         vm = %instance_id,
+        consecutive_failures,
         grace_polls,
         recovery_polls,
         "blocking scale-up after failed scale-up revert"
     );
 }
+
+/// Announce the sustain requirement for the next scale-down after a
+/// failed-down revert.
+fn log_scale_down_backoff(instance_id: &str, consecutive_failures: u32, sustain_polls: u32) {
+    tracing::info!(
+        target: "engine",
+        event = "scale_down_backoff",
+        vm = %instance_id,
+        consecutive_failures,
+        sustain_polls,
+        "raising scale-down sustain after failed scale-down revert"
+    );
+}
+
 #[async_trait]
 impl ScalingEngine for ThresholdEngine {
     fn name(&self) -> &'static str {
@@ -602,18 +697,37 @@ impl ScalingEngine for ThresholdEngine {
             // validation window. Defer further scaling until the new baseline
             // window has at least one full tick of samples.
             instance_state.reset_baseline_window(sample);
-            if let Some(target) = revert_target {
+            let Some(target) = revert_target else {
                 if failed_up {
-                    instance_state.begin_post_revert_up_hold(self.cfg.post_revert_up_grace_polls);
-                    log_post_revert_up_hold(
-                        &instance.id,
-                        self.cfg.post_revert_up_grace_polls,
-                        self.cfg.post_revert_up_recovery_polls,
-                    );
+                    instance_state.consecutive_failed_ups = 0;
+                } else {
+                    instance_state.consecutive_failed_downs = 0;
                 }
-                return ScaleAction::Revert(target);
+                return ScaleAction::None;
+            };
+            if failed_up {
+                instance_state.consecutive_failed_ups =
+                    instance_state.consecutive_failed_ups.saturating_add(1);
+                let failures = instance_state.consecutive_failed_ups;
+                let grace_polls = self.post_revert_up_grace_polls(failures);
+                instance_state.begin_post_revert_up_hold(grace_polls);
+                log_post_revert_up_hold(
+                    &instance.id,
+                    failures,
+                    grace_polls,
+                    self.cfg.post_revert_up_recovery_polls,
+                );
+            } else {
+                instance_state.consecutive_failed_downs =
+                    instance_state.consecutive_failed_downs.saturating_add(1);
+                let failures = instance_state.consecutive_failed_downs;
+                log_scale_down_backoff(
+                    &instance.id,
+                    failures,
+                    self.scale_down_sustain_polls(failures),
+                );
             }
-            return ScaleAction::None;
+            return ScaleAction::Revert(target);
         }
 
         let block_scale_up = instance_state
@@ -667,7 +781,8 @@ impl ScalingEngine for ThresholdEngine {
         }
 
         if down_target < thread_count
-            && instance_state.low_util_polls >= self.cfg.scale_down_sustain_polls
+            && instance_state.low_util_polls
+                >= self.scale_down_sustain_polls(instance_state.consecutive_failed_downs)
         {
             let action = ScaleAction::Down(down_target);
             log_scale_down_decision(instance, per_thread_util, thread_count, down_target);
@@ -701,43 +816,22 @@ impl ScalingEngine for ThresholdEngine {
             io_count: previous_io_count,
             at: applied_at,
         };
-        match action {
-            ScaleAction::Up(_) if self.cfg.scale_up_min_gain > 0.0 => {
-                // Reset sustain only after the controller accepted the action;
-                // a merely proposed or blocked downscale must retain the
-                // evidence accumulated by the sustain policy.
-                instance_state.low_util_polls = 0;
-                instance_state.start_validation(
-                    action,
-                    previous_thread_count,
-                    instance_state.current_baseline_iops,
-                    applied,
-                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
-                );
-            }
-            ScaleAction::Down(_) if self.cfg.scale_down_revert_drop > 0.0 => {
-                // Successful actuation consumes the sustained low-utilisation
-                // run; subsequent downscaling must establish a fresh run.
-                instance_state.low_util_polls = 0;
-                instance_state.post_revert_up_hold = None;
-                instance_state.start_validation(
-                    action,
-                    previous_thread_count,
-                    instance_state.current_baseline_iops,
-                    applied,
-                    self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
-                );
-            }
-            ScaleAction::Up(_) => {
-                instance_state.low_util_polls = 0;
-                instance_state.reset_baseline_window(applied);
-            }
-            ScaleAction::Down(_) => {
-                instance_state.low_util_polls = 0;
-                instance_state.post_revert_up_hold = None;
-                instance_state.reset_baseline_window(applied);
-            }
-            ScaleAction::None | ScaleAction::Revert(_) => {}
+        let validate = match action {
+            ScaleAction::Up(_) => self.cfg.scale_up_min_gain > 0.0,
+            ScaleAction::Down(_) => self.cfg.scale_down_revert_drop > 0.0,
+            ScaleAction::None | ScaleAction::Revert(_) => return,
+        };
+        instance_state.reset_after_applied(action);
+        if validate {
+            instance_state.start_validation(
+                action,
+                previous_thread_count,
+                instance_state.current_baseline_iops,
+                applied,
+                self.validation_sample_polls(action.target().unwrap_or(previous_thread_count)),
+            );
+        } else {
+            instance_state.reset_baseline_window(applied);
         }
     }
 
@@ -765,7 +859,10 @@ mod tests {
     use rstest::{fixture, rstest};
     use test_log::test;
 
-    use super::{ThresholdConfig, ThresholdEngine, log_performance_revert};
+    use super::{
+        InstanceState, PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls,
+        log_performance_revert,
+    };
     use crate::{
         backends::BackendClientError,
         engines::{AppliedOutcome, EngineTickContext, ScaleAction, ScalingEngine},
@@ -1211,6 +1308,186 @@ mod tests {
         assert_eq!(
             engine.evaluate(&instance, &context_at(t_validate)).await,
             ScaleAction::Revert(4)
+        );
+    }
+
+    /// Test that backoff doubles from the base, caps at the maximum, never
+    /// drops below the base, and is disabled by a zero maximum.
+    #[test]
+    fn test_backoff_polls_doubles_and_caps() {
+        let got: Vec<u32> = (0..6).map(|n| backoff_polls(3, n, 30)).collect();
+        assert_eq!(got, vec![3, 6, 12, 24, 30, 30]);
+        assert_eq!(backoff_polls(3, 100, 30), 30);
+        assert_eq!(backoff_polls(3, 4, 0), 3);
+        assert_eq!(backoff_polls(12, 2, 5), 12);
+    }
+
+    /// Apply a scale action at `at` against a 100k IOPS baseline and validate
+    /// it one second later with `io_delta` completed operations.
+    async fn apply_and_validate(
+        engine: &ThresholdEngine,
+        instance: &Arc<Instance>,
+        action: ScaleAction,
+        prev_thread_count: u32,
+        io_delta: u64,
+        at: Instant,
+    ) -> ScaleAction {
+        engine
+            .state
+            .lock()
+            .await
+            .get_mut(&instance.id)
+            .unwrap()
+            .current_baseline_iops = 100_000;
+        engine
+            .on_applied(
+                &instance.id,
+                AppliedOutcome::Success {
+                    action,
+                    prev_thread_count,
+                    prev_io_count_total: 0,
+                    applied_at: at,
+                },
+            )
+            .await;
+        let target = action.target().unwrap();
+        set_observation(instance, target, 0.95, io_delta).await;
+        engine
+            .evaluate(instance, &context_at(at + Duration::from_secs(1)))
+            .await
+    }
+
+    /// Test that each consecutive failed scale-up doubles the post-revert
+    /// hold up to the cap, extending grace while recovery stays fixed, and
+    /// that a kept scale-up resets the backoff.
+    #[rstest]
+    #[tokio::test]
+    async fn test_failed_scale_ups_back_off_until_kept(#[future] instance: Arc<Instance>) {
+        let instance = instance.await;
+        let engine = ThresholdEngine::new(ThresholdConfig {
+            scale_up_threshold: 0.8,
+            scale_up_min_gain: 0.05,
+            scale_validation_sample_polls: 0,
+            post_revert_up_grace_polls: 1,
+            post_revert_up_recovery_polls: 2,
+            post_revert_up_backoff_max_polls: 12,
+            ..Default::default()
+        });
+        engine.on_instance_added(&instance).await;
+        let start = Instant::now();
+
+        // Holds of 3, 6, 12, 12 polls minus the 2 recovery polls.
+        for (i, expected_grace) in [1, 4, 10, 10].into_iter().enumerate() {
+            let at = start + Duration::from_secs(10 * i as u64);
+            assert_eq!(
+                apply_and_validate(&engine, &instance, ScaleAction::Up(4), 3, 1_000, at).await,
+                ScaleAction::Revert(3)
+            );
+            let state = engine.state.lock().await;
+            let instance_state = state.get(&instance.id).unwrap();
+            assert_eq!(instance_state.consecutive_failed_ups, i as u32 + 1);
+            assert!(matches!(
+                instance_state.post_revert_up_hold,
+                Some(PostRevertUpHold::Grace { polls_remaining }) if polls_remaining == expected_grace
+            ));
+        }
+
+        let at = start + Duration::from_secs(100);
+        assert_eq!(
+            apply_and_validate(&engine, &instance, ScaleAction::Up(4), 3, 200_000, at).await,
+            ScaleAction::None
+        );
+        let state = engine.state.lock().await;
+        assert_eq!(state.get(&instance.id).unwrap().consecutive_failed_ups, 0);
+        drop(state);
+        assert_eq!(engine.post_revert_up_grace_polls(1), 1);
+    }
+
+    /// Test that each consecutive failed scale-down doubles the sustain
+    /// requirement up to the cap, and that an applied scale-up resets it.
+    #[rstest]
+    #[tokio::test]
+    async fn test_failed_scale_downs_back_off_until_scale_up(#[future] instance: Arc<Instance>) {
+        let instance = instance.await;
+        let engine = ThresholdEngine::new(ThresholdConfig {
+            scale_up_threshold: 0.8,
+            scale_down_revert_drop: 0.05,
+            scale_validation_sample_polls: 0,
+            scale_down_sustain_polls: 3,
+            scale_down_backoff_max_polls: 20,
+            ..Default::default()
+        });
+        engine.on_instance_added(&instance).await;
+        let start = Instant::now();
+
+        for (i, expected_sustain) in [6, 12, 20].into_iter().enumerate() {
+            let at = start + Duration::from_secs(10 * i as u64);
+            assert_eq!(
+                apply_and_validate(&engine, &instance, ScaleAction::Down(2), 4, 1_000, at).await,
+                ScaleAction::Revert(4)
+            );
+            let failures = engine
+                .state
+                .lock()
+                .await
+                .get(&instance.id)
+                .unwrap()
+                .consecutive_failed_downs;
+            assert_eq!(failures, i as u32 + 1);
+            assert_eq!(engine.scale_down_sustain_polls(failures), expected_sustain);
+        }
+
+        engine
+            .on_applied(
+                &instance.id,
+                AppliedOutcome::Success {
+                    action: ScaleAction::Up(5),
+                    prev_thread_count: 4,
+                    prev_io_count_total: 0,
+                    applied_at: start + Duration::from_secs(100),
+                },
+            )
+            .await;
+        let state = engine.state.lock().await;
+        assert_eq!(state.get(&instance.id).unwrap().consecutive_failed_downs, 0);
+    }
+
+    /// Test that an applied action resets only the evidence for its own
+    /// direction, and that non-scaling actions reset nothing.
+    #[rstest]
+    #[case::up(ScaleAction::Up(4), 0, 2, 0, true)]
+    #[case::down(ScaleAction::Down(2), 0, 0, 3, false)]
+    #[case::none(ScaleAction::None, 5, 2, 3, true)]
+    #[case::revert(ScaleAction::Revert(3), 5, 2, 3, true)]
+    #[tokio::test]
+    async fn test_reset_after_applied(
+        #[future] instance: Arc<Instance>,
+        #[case] action: ScaleAction,
+        #[case] low_util_polls: u32,
+        #[case] consecutive_failed_ups: u32,
+        #[case] consecutive_failed_downs: u32,
+        #[case] post_revert_up_hold: bool,
+    ) {
+        let mut instance_state = InstanceState::new(instance.await);
+        instance_state.low_util_polls = 5;
+        instance_state.consecutive_failed_ups = 2;
+        instance_state.consecutive_failed_downs = 3;
+        instance_state.begin_post_revert_up_hold(1);
+
+        instance_state.reset_after_applied(action);
+
+        assert_eq!(instance_state.low_util_polls, low_util_polls);
+        assert_eq!(
+            instance_state.consecutive_failed_ups,
+            consecutive_failed_ups
+        );
+        assert_eq!(
+            instance_state.consecutive_failed_downs,
+            consecutive_failed_downs
+        );
+        assert_eq!(
+            instance_state.post_revert_up_hold.is_some(),
+            post_revert_up_hold
         );
     }
 
