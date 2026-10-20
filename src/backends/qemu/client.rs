@@ -317,7 +317,6 @@ impl InstanceClient for QemuInstanceClient {
         if let Some(perf) = perf.as_mut()
             && !topo.vq_inflight.is_empty()
         {
-            perf.vq_depth_total = Some(topo.vq_inflight.iter().sum());
             perf.per_vq_depth = Some(topo.vq_inflight.clone());
         }
         let thread_count = topo.iothreads.len() as u32;

@@ -118,6 +118,10 @@ impl QemuTopology {
     // FIXME document body, check unit test
     pub fn new(body: &str) -> Self {
         let mut topo = Self::default();
+        // In-flight depths for every virtio-scsi device, keyed by device then
+        // queue. The managed device is only known once its num_queues line is
+        // seen, which may come after its inflight lines, so buffer them all and
+        // keep just the managed device's entry after the loop.
         let mut inflight: HashMap<String, BTreeMap<usize, u64>> = HashMap::new();
         for line in body.lines() {
             if line.starts_with('#') {
@@ -359,7 +363,7 @@ qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 4
     /// Test that per-vq in-flight depths are taken from the managed device
     /// only, ordered by queue, regardless of where they appear in the body.
     #[test]
-    fn topology_parses_vq_inflight_for_managed_device() {
+    fn test_topology_parses_vq_inflight_for_managed_device() {
         let body = r#"qemu_virtio_scsi_vq_inflight{device="/machine/peripheral/scsi0",vq="1"} 7
 qemu_virtio_scsi_vq_inflight{device="/machine/peripheral/scsi0",vq="0"} 3
 qemu_virtio_scsi_num_queues{device="/machine/peripheral/scsi0"} 2
