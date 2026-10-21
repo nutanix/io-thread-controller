@@ -233,6 +233,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     /// Test that the first sample records a baseline and yields no
@@ -262,14 +264,24 @@ mod tests {
         );
     }
 
-    /// Test that a counter reset drops prior rates and starts a new
-    /// baseline.
-    #[test]
-    fn test_rolling_counter_reset_replaces_baseline() {
-        let mut metrics = RollingMetrics::new();
-        let t0 = Instant::now();
-        metrics.push_from_procfs_delta(t0, 100, 100);
-        metrics.push_from_procfs_delta(t0 + Duration::from_secs(1), 10, 10);
-        assert!(metrics.is_empty());
+    proptest! {
+        #[test]
+        fn test_rolling_counter_reset_replaces_baseline(
+            io0 in 1u64..,
+            io1 in 1u64..,
+            cpu0 in 1u64..,
+            cpu1 in 1u64..,
+        ) {
+            prop_assume!(io1 < io0 || cpu1 < cpu0);
+
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(2);
+
+            metrics.push_from_procfs_delta(t0, io0, cpu0);
+            metrics.push_from_procfs_delta(t1, io1, cpu1);
+
+            prop_assert!(metrics.is_empty());
+        }
     }
 }
