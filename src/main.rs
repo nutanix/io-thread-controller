@@ -5,18 +5,15 @@
 
 //! `io-thread-controller` daemon entry point.
 
-use std::io::ErrorKind;
-
 use clap::{self, CommandFactory, FromArgMatches, Parser};
 use io_thread_controller::{
-    backends::BackendClientError,
-    backends::registered_backends,
-    config::{Config, ConfigError, dump_default_config, load_json_with_includes, validate_config},
+    backends::{BackendClientError, registered_backends},
+    config::{Config, ConfigError, dump_default_config, load_config_or_default, validate_config},
     daemon::{DaemonError, VERSION, run},
     util::Path,
 };
 use thiserror::Error;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info};
 
 #[derive(Error, Debug)]
 enum IoThreadControllerError {
@@ -129,7 +126,7 @@ async fn main() -> Result<(), IoThreadControllerError> {
         "io-thread-controller starting"
     );
 
-    let mut cfg = load_daemon_config(&cli.config)?;
+    let mut cfg: Config = load_config_or_default(&cli.config)?;
     debug!("loaded configuration {}", &cli.config);
     if cli.print_status_header {
         cfg.print_status_header = true;
@@ -141,16 +138,6 @@ async fn main() -> Result<(), IoThreadControllerError> {
     let backends = registered_backends(&cfg)?;
     run(cfg, backends).await?;
     Ok(())
-}
-
-/// Load defaults only for an absent file; propagate every other open failure.
-#[instrument]
-fn load_daemon_config(path: &Path) -> Result<Config, ConfigError> {
-    match std::fs::File::open(path) {
-        Ok(_) => load_json_with_includes(path),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Config::default()),
-        Err(error) => Err(error)?,
-    }
 }
 
 /// Install the process-wide tracing subscriber.
