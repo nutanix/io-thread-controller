@@ -756,12 +756,16 @@ fn read_cgroup_sample(pid: i32) -> Result<CgroupSample, CgroupError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
     };
 
     use async_trait::async_trait;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::backends::BackendClientError;
@@ -903,6 +907,271 @@ mod tests {
         assert_eq!(
             compute_per_worker_util(&previous, &current, 100.0),
             vec![("kept".to_string(), 0.25)]
+        );
+    }
+
+    fn perf_sample(
+        read_io: u64,
+        write_io: u64,
+        other_io: u64,
+        read_bytes: u64,
+        write_bytes: u64,
+    ) -> Option<InstancePerfSample> {
+        Some(InstancePerfSample {
+            read_io_count: read_io,
+            write_io_count: write_io,
+            other_io_count: other_io,
+            read_bytes_total: read_bytes,
+            write_bytes_total: write_bytes,
+            ..Default::default()
+        })
+    }
+
+    fn status_with_previous(
+        now: Instant,
+        read_io: u64,
+        write_io: u64,
+        other_io: u64,
+        read_bytes: u64,
+        write_bytes: u64,
+    ) -> InstanceStatus {
+        InstanceStatus {
+            previous_perf_time: Some(now),
+            previous_read_io_count: read_io,
+            previous_write_io_count: write_io,
+            previous_other_io_count: other_io,
+            previous_read_bytes_total: read_bytes,
+            previous_write_bytes_total: write_bytes,
+            ..Default::default()
+        }
+    }
+
+    proptest! {
+        /// Test that the first call only establishes a baseline and does not
+        /// fabricate any rates.
+        #[test]
+        fn test_first_call_is_baseline_only(
+            read_io in any::<u64>(),
+            write_io in any::<u64>(),
+            other_io in any::<u64>(),
+            read_bytes in any::<u64>(),
+            write_bytes in any::<u64>(),
+        ) {
+            let mut status = InstanceStatus {
+                read_iops : 999,
+                write_iops : 888,
+                other_iops : 777,
+                read_bytes_per_second : 666,
+                write_bytes_per_second : 555,
+                ..Default::default()
+            };
+
+            let now = Instant::now();
+            Instance::update_perf_rates(
+                &mut status,
+                &perf_sample(read_io, write_io, other_io, read_bytes, write_bytes),
+                now,
+            );
+
+            prop_assert_eq!(status.read_iops, 999);
+            prop_assert_eq!(status.write_iops, 888);
+            prop_assert_eq!(status.other_iops, 777);
+            prop_assert_eq!(status.read_bytes_per_second, 666);
+            prop_assert_eq!(status.write_bytes_per_second, 555);
+            // Bookkeeping must still advance.
+            prop_assert_eq!(status.previous_perf_time, Some(now));
+            prop_assert_eq!(status.previous_read_io_count, read_io);
+            prop_assert_eq!(status.previous_write_io_count, write_io);
+            prop_assert_eq!(status.previous_other_io_count, other_io);
+            prop_assert_eq!(status.previous_read_bytes_total, read_bytes);
+            prop_assert_eq!(status.previous_write_bytes_total, write_bytes);
+        }
+
+        /// Test that zero elapsed time and backwards time both leave rates
+        /// untouched (elapsed_ns == 0), while bookkeeping still advances.
+        #[test]
+        fn test_zero_elapsed_leaves_rates_untouched(
+            prev_read in any::<u64>(),
+            cur_read in any::<u64>(),
+            elapsed_ms in 1u64..10_000,
+        ) {
+            let t0 = Instant::now();
+
+            // Case 1: same instant -> elapsed 0.
+            let mut s_same = status_with_previous(t0, prev_read, 0, 0, 0, 0);
+            s_same.read_iops = 42;
+            Instance::update_perf_rates(&mut s_same, &perf_sample(cur_read, 0, 0, 0, 0), t0);
+            prop_assert_eq!(s_same.read_iops, 42);
+            prop_assert_eq!(s_same.previous_read_io_count, cur_read);
+
+            // Case 2: now is before previous -> checked_duration_since is None -> 0.
+            let t_future = t0 + Duration::from_millis(elapsed_ms);
+            let mut s_back = status_with_previous(t_future, prev_read, 0, 0, 0, 0);
+            s_back.read_iops = 42;
+            Instance::update_perf_rates(&mut s_back, &perf_sample(cur_read, 0, 0, 0, 0), t0);
+            prop_assert_eq!(s_back.read_iops, 42);
+            prop_assert_eq!(s_back.write_iops, 0);
+            prop_assert_eq!(s_back.previous_perf_time, Some(t0));
+            prop_assert_eq!(s_back.previous_read_io_count, cur_read);
+        }
+
+        /// Test that a decreasing counter produces a zero rate.
+        #[test]
+        fn test_counter_reset_yields_zero_rate(
+            prev in 1u64..u64::MAX,
+            cur in 0u64..u64::MAX,
+        ) {
+            prop_assume!(cur < prev);
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(1);
+            let mut status = status_with_previous(t0, prev, prev, prev, prev, prev);
+            Instance::update_perf_rates(
+                &mut status,
+                &perf_sample(cur, cur, cur, cur, cur),
+                t1,
+            );
+            prop_assert_eq!(status.read_iops, 0);
+            prop_assert_eq!(status.write_iops, 0);
+            prop_assert_eq!(status.other_iops, 0);
+            prop_assert_eq!(status.read_bytes_per_second, 0);
+            prop_assert_eq!(status.write_bytes_per_second, 0);
+        }
+
+        /// Test that a larger counter delta over the same period of time
+        /// produces a greater rate.
+        #[test]
+        fn test_rate_is_monotonic_in_current(
+            prev in 0u64..1_000_000,
+            delta_lo in 0u64..1_000_000,
+            delta_hi in 0u64..1_000_000,
+            elapsed_ms in 1u64..10_000,
+        ) {
+            prop_assume!(delta_lo < delta_hi);
+            let cur_lo = prev + delta_lo;
+            let cur_hi = prev + delta_hi;
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_millis(elapsed_ms);
+
+            let mut s_lo = status_with_previous(t0, prev, 0, 0, 0, 0);
+            Instance::update_perf_rates(&mut s_lo, &perf_sample(cur_lo, 0, 0, 0, 0), t1);
+
+            let mut s_hi = status_with_previous(t0, prev, 0, 0, 0, 0);
+            Instance::update_perf_rates(&mut s_hi, &perf_sample(cur_hi, 0, 0, 0, 0), t1);
+
+            prop_assert!(s_hi.read_iops >= s_lo.read_iops);
+        }
+
+        /// Test that for a fixed counter delta, rate decreases with elapsed
+        /// time.
+        #[test]
+        fn test_rate_is_inverse_monotonic_in_elapsed(
+            prev in 0u64..1_000_000,
+            delta in 1u64..1_000_000,
+            elapsed_lo_ms in 1u64..5_000,
+            elapsed_hi_ms in 1u64..5_000,
+        ) {
+            prop_assume!(elapsed_lo_ms < elapsed_hi_ms);
+            let cur = prev + delta;
+            let t0 = Instant::now();
+            let t_lo = t0 + Duration::from_millis(elapsed_lo_ms);
+            let t_hi = t0 + Duration::from_millis(elapsed_hi_ms);
+
+            let mut s_lo = status_with_previous(t0, prev, 0, 0, 0, 0);
+            Instance::update_perf_rates(&mut s_lo, &perf_sample(cur, 0, 0, 0, 0), t_lo);
+
+            let mut s_hi = status_with_previous(t0, prev, 0, 0, 0, 0);
+            Instance::update_perf_rates(&mut s_hi, &perf_sample(cur, 0, 0, 0, 0), t_hi);
+
+            prop_assert!(s_lo.read_iops >= s_hi.read_iops);
+        }
+
+        /// Test that the five counters are independent.
+        #[test]
+        fn test_counters_are_independent(
+            prev in 0u64..1_000_000,
+            delta in 1u64..1_000_000,
+        ) {
+            let cur = prev + delta;
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(1);
+
+            // Only read_io advances.
+            let mut s = status_with_previous(t0, prev, prev, prev, prev, prev);
+            Instance::update_perf_rates(
+                &mut s,
+                &perf_sample(cur, prev, prev, prev, prev),
+                t1,
+            );
+            prop_assert!(s.read_iops > 0);
+            prop_assert_eq!(s.write_iops, 0);
+            prop_assert_eq!(s.other_iops, 0);
+            prop_assert_eq!(s.read_bytes_per_second, 0);
+            prop_assert_eq!(s.write_bytes_per_second, 0);
+
+            // Only write_bytes advances.
+            let mut s2 = status_with_previous(t0, prev, prev, prev, prev, prev);
+            Instance::update_perf_rates(
+                &mut s2,
+                &perf_sample(prev, prev, prev, prev, cur),
+                t1,
+            );
+            prop_assert_eq!(s2.read_iops, 0);
+            prop_assert_eq!(s2.write_iops, 0);
+            prop_assert_eq!(s2.other_iops, 0);
+            prop_assert_eq!(s2.read_bytes_per_second, 0);
+            prop_assert!(s2.write_bytes_per_second > 0);
+        }
+
+        /// Test that a None perf is equivalent to all-zero counters.
+        #[test]
+        fn test_none_perf_equals_zero_counters(
+            prev in 0u64..1_000_000,
+            elapsed_ms in 1u64..10_000,
+        ) {
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_millis(elapsed_ms);
+
+            let mut s_none = status_with_previous(t0, prev, prev, prev, prev, prev);
+            Instance::update_perf_rates(&mut s_none, &None, t1);
+
+            let mut s_zero = status_with_previous(t0, prev, prev, prev, prev, prev);
+            Instance::update_perf_rates(
+                &mut s_zero,
+                &perf_sample(0, 0, 0, 0, 0),
+                t1,
+            );
+
+            prop_assert_eq!(s_none.read_iops, s_zero.read_iops);
+            prop_assert_eq!(s_none.write_iops, s_zero.write_iops);
+            prop_assert_eq!(s_none.other_iops, s_zero.other_iops);
+            prop_assert_eq!(s_none.read_bytes_per_second, s_zero.read_bytes_per_second);
+            prop_assert_eq!(s_none.write_bytes_per_second, s_zero.write_bytes_per_second);
+            prop_assert_eq!(
+                s_none.previous_read_io_count,
+                s_zero.previous_read_io_count
+            );
+        }
+    }
+
+    /// Test that a short interval cannot report more than one occupied CPU.
+    #[test]
+    fn test_util_clamps_at_one() {
+        let previous = vec![task(1, "wrk", 0)];
+        let current = vec![task(1, "wrk", 250)];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![("wrk".to_string(), 1.0)]
+        );
+    }
+
+    /// Test that a repeated previous tid uses the last sample.
+    #[test]
+    fn test_util_uses_the_last_sample_for_a_repeated_tid() {
+        let previous = vec![task(1, "wrk", 0), task(1, "wrk", 40)];
+        let current = vec![task(1, "wrk", 90)];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![("wrk".to_string(), 0.5)]
         );
     }
 }
