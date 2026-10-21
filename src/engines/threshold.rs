@@ -586,7 +586,7 @@ fn log_scale_up_decision(
         target: "engine",
         event = "scale_up",
         vm = instance.to_string(),
-        util = per_thread_util,
+        util = %format!("{:.2}%", per_thread_util * 100.0),
         thr = %format!("{thread_count}->{target}"),
         current_iops,
         min_target_iops,
@@ -606,7 +606,7 @@ fn log_scale_down_decision(
         target: "engine",
         event = "scale_down",
         vm = instance.to_string(),
-        util = per_thread_util,
+        util = %format!("{:.2}%", per_thread_util * 100.0),
         thr = %format!("{thread_count}->{target}"),
         "threshold scaling decision"
     );

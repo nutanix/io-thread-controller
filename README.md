@@ -231,11 +231,11 @@ you get one INFO line on the `engine` target using the same
 `vm=<id>` convention as the status lines:
 
 ```
-INFO vm=vm-1615a59c-... util=0.8955 action="up" thr=4->5
+INFO vm=vm-1615a59c-... util=89.55% action="up" thr=4->5
 ```
 
 `vm` is the same identifier used by status lines, `util` is
-the per-thread utilisation that triggered the decision, `action`
+the per-thread utilisation percentage that triggered the decision, `action`
 is `up`, `down`, or `revert`, and `thr` is the requested
 `<old>-><new>` transition.
 
