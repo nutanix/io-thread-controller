@@ -52,10 +52,6 @@ impl MockDir {
             _dir: dir,
         }
     }
-
-    pub(crate) fn root(&self) -> &std::path::Path {
-        &self.path
-    }
 }
 
 /// Create a new `MockDir` as an `rstest` fixture

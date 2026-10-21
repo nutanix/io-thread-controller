@@ -926,6 +926,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use proptest::prelude::*;
     use rstest::{fixture, rstest};
     use test_log::test;
 
@@ -1592,16 +1593,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_validation_polls_increase_with_target_thread_count() {
-        let engine = new_engine(ThresholdConfig {
-            scale_validation_delay_secs: polls(2),
-            scale_validation_delay_per_thread_secs: polls(3),
-            ..Default::default()
-        });
+    proptest! {
+        /// Test that the amount of validation polls increases with the amount
+        /// of threads.
+        #[test]
+        fn test_prop_validation_polls_increase_with_target_thread_count(
+            target_a in 0u32..1_000,
+            target_b in 0u32..1_000,
+        ) {
+            prop_assume!(target_a != target_b);
 
-        assert_eq!(engine.validation_sample_polls(1), 5);
-        assert_eq!(engine.validation_sample_polls(4), 14);
+            let engine = new_engine(ThresholdConfig {
+                scale_validation_delay_secs: polls(2),
+                scale_validation_delay_per_thread_secs: polls(3),
+                ..Default::default()
+            });
+
+            let polls_a = engine.validation_sample_polls(target_a);
+            let polls_b = engine.validation_sample_polls(target_b);
+
+            if target_a > target_b {
+                prop_assert!(polls_a > polls_b);
+            } else {
+                prop_assert!(polls_a < polls_b);
+            }
+        }
     }
 
     /// Test that while a prior scale-up is pending validation, further
