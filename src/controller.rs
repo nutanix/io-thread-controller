@@ -970,14 +970,12 @@ impl Controller {
     }
 
     fn format_instance_status_line(
-        instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) -> String {
         let cpu = compute_cpu_stats(status);
         format!(
-            "event=vm_status vm={} thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
-            instance,
+            "event=vm_status thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
             status.thread_count,
             status.read_iops,
             status.write_iops,
@@ -1003,7 +1001,7 @@ impl Controller {
     ) {
         self.log_per_vm_line(
             &instance.id,
-            &Self::format_instance_status_line(instance, status, iops_windows),
+            &Self::format_instance_status_line(status, iops_windows),
         );
     }
 
