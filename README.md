@@ -177,16 +177,17 @@ on the `status` tracing target. With `--print-status-header`, it also emits a
 
 ### Per-VM line
 
-The examples are wrapped with backslashes for readability; each emitted record
-occupies one line.
+By default each VM's line is appended to
+`/var/log/io-thread-controller/vms/<vm>.log`, so the line itself does not repeat
+the VM identifier. The examples are wrapped with backslashes for readability;
+each emitted record occupies one line.
 
 ```
-INFO vm=vm-a thr=4 iops=155593/0/0 bw_mb_s=20394/0 \
-  cpu=90/87/358 iops_1_5_15m=154995/153840/151220 \
+2026-01-01T00:00:00.000Z event=vm_status thr=4 iops=155593/0/0 \
+  bw_mb_s=20394/0 cpu=90/87/358 iops_1_5_15m=154995/153840/151220 \
   cpu_us_per_io_1_5_15m=23/16/19
 ```
 
-- `vm`: VM identifier.
 - `thr`: matched worker threads.
 - `iops`: current read / write / other operations per second.
 - `iops_1_5_15m`: average total IOPS over rolling 1m / 5m / 15m windows.
