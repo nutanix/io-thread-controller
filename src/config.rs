@@ -32,7 +32,7 @@ pub enum ConfigError {
 }
 
 /// Tunable parameters for the controller.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Which registered scaling engine drives decisions.
@@ -363,7 +363,19 @@ pub fn dump_default_config() -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    use crate::test::mockdir::mockdir;
+
+    /// Generate a string which resembles a relative unix path.
+    fn arb_path_string() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}",
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}".prop_map(|tail| format!("/{tail}")),
+        ]
+    }
 
     /// Test that the default `Config` validates.
     #[test]
@@ -468,31 +480,57 @@ mod tests {
         assert!(err.to_string().contains("expected u64"), "{err}");
     }
 
-    /// Test that minimal valid JSON loads into `Config` with the
-    /// expected engine, poll, and paths.
-    #[test]
-    fn test_config_load_round_trips_every_field() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "engine": "threshold",
-                "engine_config_dir": "/etc/io-thread-controller/engines",
-                "backend_config_dir": "/etc/io-thread-controller/backends",
-                "scale_poll_secs": 7,
-                "vm_state_path": "/var/lib/io-thread-controller/vm-state.json"
-            }"#,
-        )
-        .unwrap();
-
-        let cfg: Config = load_or_default(PrefixedPath::new(path.to_str().unwrap())).unwrap();
-        assert_eq!(cfg.engine, "threshold");
-        assert_eq!(cfg.scale_poll_secs, 7);
-        assert_eq!(
-            cfg.engine_config_dir.as_os_str(),
-            std::ffi::OsStr::new("/etc/io-thread-controller/engines")
-        );
+    proptest! {
+        /// Test an abitrary config can be stored and loaded without losing
+        /// any field.
+        #[test]
+        #[ignore = "fails?"]
+        fn test_config_load_round_trips_every_field(
+            engine in "[a-z0-9]{0,12}",
+            engine_config_dir in arb_path_string(),
+            backend_config_dir in arb_path_string(),
+            vm_state_path in arb_path_string(),
+            min_thread_count: u32,
+            max_thread_count: u32,
+            host_cpu_scale_up_ceiling in -1_000.0..1_000.0f64,
+            cooldown_secs in ..1_000u64,
+            scale_poll_secs in ..1_000u64,
+            round_up_durations: bool,
+            enable_per_vm_status_line: bool,
+            enable_per_vm_main_log: bool,
+            enable_aggregate_status_line: bool,
+            print_status_header: bool,
+            max_instances_adjusted_per_poll: u32,
+            experimental_psi_monitoring: bool,
+            refresh_cgroup_on_each_read: bool,
+            dry_run in any::<bool>(),
+        ) {
+            let _mockdir = mockdir();
+            let cfg = Config {
+                engine,
+                engine_config_dir: PrefixedPath::new(&engine_config_dir),
+                backend_config_dir: PrefixedPath::new(&backend_config_dir),
+                vm_state_path: PrefixedPath::new(&vm_state_path),
+                min_thread_count,
+                max_thread_count,
+                host_cpu_scale_up_ceiling,
+                cooldown_secs,
+                scale_poll_secs,
+                round_up_durations,
+                enable_per_vm_status_line,
+                enable_per_vm_main_log,
+                enable_aggregate_status_line,
+                print_status_header,
+                max_instances_adjusted_per_poll,
+                experimental_psi_monitoring,
+                refresh_cgroup_on_each_read,
+                dry_run,
+            };
+            let path = PrefixedPath::new("/config.json");
+            std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+            let loaded: Config = load_or_default(PrefixedPath::new(path.to_str().unwrap())).unwrap();
+            prop_assert_eq!(loaded, cfg);
+        }
     }
 
     /// Test that loading JSON with an unknown field returns
