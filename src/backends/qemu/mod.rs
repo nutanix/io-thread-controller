@@ -82,7 +82,7 @@ impl QemuConfig {
     /// Read `<dir>/qemu.json` if present, otherwise return the
     /// built-in defaults.
     pub fn from_dir(dir: &Path) -> Result<Self, ConfigError> {
-        let path = Path::new(&dir.join("qemu.json"));
+        let path = dir.join("qemu.json");
         config::load_config_or_default(&path)
     }
 }
