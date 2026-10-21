@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{ConfigError, PollConverter, deserialize_percent, serialize_percent},
+    config::{self, ConfigError, PollConverter, deserialize_percent, serialize_percent},
     engines::{
         AppliedOutcome, EngineError, EngineRegistration, EngineTickContext, ScaleAction,
         ScalingEngine,
@@ -477,12 +477,8 @@ impl ThresholdEngine {
     /// Load `threshold.json`, falling back to built-in defaults when absent.
     pub fn from_config_dir(dir: &Path, durations: &mut PollConverter) -> Result<Self, EngineError> {
         let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
-        // TODO TOCTOU, blindly load and return default if ENOENT
-        let cfg: ThresholdConfig = if path.exists() {
-            crate::config::load_json_with_includes(path)?
-        } else {
-            ThresholdConfig::default()
-        };
+        let cfg: ThresholdConfig = config::load_or_default(&path)?;
+        cfg.validate()?;
         Ok(Self::new(cfg, durations)?)
     }
 
