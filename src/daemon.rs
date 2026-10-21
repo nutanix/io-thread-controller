@@ -73,9 +73,9 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
     if cfg.print_status_header {
         tracing::info!(
             target: "status",
-            "# vm=<id> thr=<threads> iops=<read>/<write>/<other> \
-             iops_1_5_15m=<1m>/<5m>/<15m> bw_mb_s=<read>/<write> \
-             cpu=<average>/<total> cpu_us_per_io_1_5_15m=<1m>/<5m>/<15m>"
+            "# <threads> <read IOPS> <write IOPS> <other IOPS> \
+             <IOPS 1m> <IOPS 5m> <IOPS 15m> <read BW MB/s> <write BW MB/s> \
+             <average CPU> <total CPU> <us/IOP 1m> <us/IOP 5m> <us/IOP 15m>"
         );
         tracing::info!(
             target: "status",

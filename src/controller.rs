@@ -963,35 +963,36 @@ impl Controller {
                 target: "status",
                 tracked = self.instances.len(),
                 total_threads,
-                iops_1_5_15m = %format_optional_cells(aggregate),
+                iops_1_5_15m = %format_optional_cells(aggregate, "/"),
                 "aggregate"
             );
         }
     }
 
     fn format_instance_status_line(
-        instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) -> String {
         let cpu = compute_cpu_stats(status);
         format!(
-            "event=vm_status vm={} thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
-            instance,
+            "{} {} {} {} {} {} {} {} {} {} {} {} {}",
             status.thread_count,
             status.read_iops,
             status.write_iops,
             status.other_iops,
-            format_optional_cells(iops_windows),
+            format_optional_cells(iops_windows, " "),
             status.read_bytes_per_second / 1_000_000,
             status.write_bytes_per_second / 1_000_000,
             cpu.avg_pct,
             cpu.median_pct,
             cpu.total_pct,
-            format_latency_cell(status.read_latency_us),
-            format_latency_cell(status.write_latency_us),
-            format_1_5_15(&status.rolling, |rolling, window| rolling
-                .cpu_us_per_io_over(window)),
+            format_latency_cell(status.read_latency_us, " "),
+            format_latency_cell(status.write_latency_us, " "),
+            format_1_5_15(
+                &status.rolling,
+                |rolling, window| rolling.cpu_us_per_io_over(window),
+                " "
+            ),
         )
     }
 
@@ -1003,7 +1004,7 @@ impl Controller {
     ) {
         self.log_per_vm_line(
             &instance.id,
-            &Self::format_instance_status_line(instance, status, iops_windows),
+            &Self::format_instance_status_line(status, iops_windows),
         );
     }
 
@@ -1021,11 +1022,11 @@ impl Controller {
             read_iops = status.read_iops,
             write_iops = status.write_iops,
             other_iops = status.other_iops,
-            iops_1_5_15m = %format_optional_cells(iops_windows),
+            iops_1_5_15m = %format_optional_cells(iops_windows, "/"),
             read_bw_mb_s = status.read_bytes_per_second / 1_000_000,
             write_bw_mb_s = status.write_bytes_per_second / 1_000_000,
-            read_latency_us = %format_latency_cell(status.read_latency_us),
-            write_latency_us = %format_latency_cell(status.write_latency_us)
+            read_latency_us = %format_latency_cell(status.read_latency_us, "/"),
+            write_latency_us = %format_latency_cell(status.write_latency_us, "/")
         );
     }
 
@@ -1155,8 +1156,9 @@ fn host_cpu_utilisation(previous: HostCpuSample, current: HostCpuSample) -> f64 
     }
 }
 
-/// Render the 1m/5m/15m cells, using `-` before a window has data.
-fn format_optional_cells(values: [Option<u64>; 3]) -> String {
+/// Render the 1m/5m/15m cells joined by `sep`, using `-` before a window has
+/// data.
+fn format_optional_cells(values: [Option<u64>; 3], sep: &str) -> String {
     values
         .into_iter()
         .map(|value| {
@@ -1165,18 +1167,20 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
                 .unwrap_or_else(|| "-".to_string())
         })
         .collect::<Vec<_>>()
-        .join("/")
+        .join(sep)
 }
 
-fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>) -> String {
-    latency
-        .map(|latency| {
-            format!(
-                "{}/{}/{}/{}",
-                latency.p50, latency.p95, latency.p99, latency.avg
-            )
-        })
-        .unwrap_or_else(|| "-".to_string())
+/// Render p50/p95/p99/avg latency cells joined by `sep`.
+///
+/// Missing latency still renders one `-` per cell so positional consumers see
+/// a fixed number of fields.
+fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>, sep: &str) -> String {
+    match latency {
+        Some(latency) => [latency.p50, latency.p95, latency.p99, latency.avg]
+            .map(|value| value.to_string())
+            .join(sep),
+        None => ["-"; 4].join(sep),
+    }
 }
 
 #[cfg(test)]

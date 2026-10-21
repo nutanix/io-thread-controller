@@ -217,8 +217,9 @@ impl RollingMetrics {
     }
 }
 
-/// Render 1m/5m/15m cells, using `-` until a window has a sample.
-pub fn format_1_5_15<F>(metrics: &RollingMetrics, getter: F) -> String
+/// Render 1m/5m/15m cells joined by `sep`, using `-` until a window has a
+/// sample.
+pub fn format_1_5_15<F>(metrics: &RollingMetrics, getter: F, sep: &str) -> String
 where
     F: Fn(&RollingMetrics, Duration) -> Option<u64>,
 {
@@ -228,7 +229,7 @@ where
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string())
         })
-        .join("/")
+        .join(sep)
 }
 
 #[cfg(test)]
