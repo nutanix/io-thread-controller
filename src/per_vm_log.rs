@@ -15,7 +15,6 @@ use std::{
     fmt::{self, Write as _},
     fs::{OpenOptions, create_dir_all},
     io::Write as _,
-    path::PathBuf,
     sync::{Arc, Mutex, RwLock},
     time::SystemTime,
 };
@@ -64,7 +63,7 @@ impl PerVmLog {
     }
 
     /// Return the log file of `vm`, or `None` while per-VM files are disabled.
-    pub fn path(&self, vm: &str) -> Option<PathBuf> {
+    pub fn path(&self, vm: &str) -> Option<PrefixedPath> {
         let name: String = vm
             .chars()
             .map(|ch| {
