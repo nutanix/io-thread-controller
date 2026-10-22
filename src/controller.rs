@@ -27,7 +27,7 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
-    rolling::format_1_5_15,
+    per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
     util::Path,
 };
@@ -988,11 +988,9 @@ impl Controller {
             cpu.total_pct,
             format_latency_cell(status.read_latency_us, " "),
             format_latency_cell(status.write_latency_us, " "),
-            format_1_5_15(
-                &status.rolling,
-                |rolling, window| rolling.cpu_us_per_io_over(window),
-                " "
-            ),
+            &status
+                .rolling
+                .format_1_5_15(|rolling, window| rolling.cpu_us_per_io_over(window), " "),
         )
     }
 
