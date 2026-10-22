@@ -1,4 +1,4 @@
-# Commits messages
+# Commit messages
 
 - Commit title should start with a capital letter.
 - If you used AI, state so in the commit message, e.g.:
