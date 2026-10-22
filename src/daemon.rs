@@ -82,7 +82,7 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
         );
         tracing::info!(
             target: "status",
-            "# aggregate line: <instances> <threads> <iops_1m>/<iops_5m>/<iops_15m>"
+            "# aggregate line: <instances> <threads> <IOPS 1m> <IOPS 5m> <IOPS 15m>"
         );
     }
     let engine = load_registered_engine(&cfg.engine_config_dir, &cfg.engine)?;
