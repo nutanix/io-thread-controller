@@ -2407,8 +2407,8 @@ fn draw_perf_plot(
 /// indices) the perf / CPU / QD panes should render with the
 /// "thick" stroke.  Series order in each of those panes is:
 ///
-///   * `[0]`        = aggregate (grey), when enabled with >=2 vms.  Drawn first so
-///     per-VM lines overpaint it, keeping the vm hue visible even when the
+///   * `[0]`        = aggregate (grey), when enabled with >=2 vms.  Drawn first
+///     so per-VM lines overpaint it, keeping the vm hue visible even when the
 ///     aggregate trace overlaps.
 ///   * `[base..]`   = per-VM lines, in `snap.vms` order, where `base = 1` when
 ///     the aggregate is present and `0` otherwise.
