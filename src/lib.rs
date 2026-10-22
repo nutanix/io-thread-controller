@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod dbus;
 pub mod engines;
 pub mod instance;
+pub mod per_vm_log;
 pub mod rolling;
 pub mod state;
 pub mod util;
