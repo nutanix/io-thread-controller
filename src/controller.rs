@@ -1073,7 +1073,11 @@ impl Controller {
         }
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(mut file) => {
-                if let Err(error) = writeln!(file, "{} {line}", humantime::format_rfc3339_millis(SystemTime::now())) {
+                if let Err(error) = writeln!(
+                    file,
+                    "{} {line}",
+                    humantime::format_rfc3339_millis(SystemTime::now())
+                ) {
                     let mut warned = self
                         .per_vm_log_io_error_warned
                         .lock()
