@@ -103,7 +103,7 @@ impl QemuInstanceClient {
             if let Err(del_err) = self.client.del_io_thread(&new_id).await {
                 tracing::debug!(
                     target: "qemu",
-                    uuid = %self.uuid,
+                    vm = %self.uuid,
                     iothread = %new_id,
                     "rollback object-del after set-mapping failure: {del_err}"
                 );
@@ -133,7 +133,7 @@ impl QemuInstanceClient {
         if let Err(e) = self.client.del_io_thread(&doomed).await {
             tracing::warn!(
                 target: "qemu",
-                uuid = %self.uuid,
+                vm = %self.uuid,
                 iothread = %doomed,
                 error = ?e,
                 "object-del failed; will retry next tick"
@@ -159,7 +159,7 @@ impl QemuInstanceClient {
         if thread_count == 1 {
             tracing::debug!(
                 target: "qemu",
-                uuid = %self.uuid,
+                vm = %self.uuid,
                 "using minimal fallback snapshot without cached topology"
             );
         }
@@ -170,7 +170,7 @@ impl QemuInstanceClient {
             Err(e) => {
                 tracing::debug!(
                     target: "qemu",
-                    uuid = %self.uuid,
+                    vm = %self.uuid,
                     error = ?e,
                     "query-blockstats failed"
                 );
@@ -239,7 +239,7 @@ impl InstanceClient for QemuInstanceClient {
                 if should_warn {
                     tracing::warn!(
                         target: "qemu",
-                        uuid = %self.uuid,
+                        vm = %self.uuid,
                         "QMP command x-query-prometheus-metrics unsupported; using fallback snapshot"
                     );
                 }
@@ -305,7 +305,7 @@ impl InstanceClient for QemuInstanceClient {
             Err(e) => {
                 tracing::debug!(
                     target: "qemu",
-                    uuid = %self.uuid,
+                    vm = %self.uuid,
                     error = ?e,
                     "query-blockstats failed"
                 );
