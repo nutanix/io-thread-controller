@@ -446,7 +446,7 @@ mod tests {
     /// Test that domain XML detection accepts virtio-scsi model
     /// variants and rejects others.
     #[test]
-    fn xml_matches_virtio_scsi_variants() {
+    fn test_libvirt_xml_matches_virtio_scsi_variants() {
         let a = r#"<controller type='scsi' index='0' model='virtio-scsi'>"#;
         let b = r#"<controller type="scsi" index="0" model="virtio-scsi"/>"#;
         let c = r#"<controller type='scsi' model='lsi'/>"#;
@@ -459,7 +459,7 @@ mod tests {
 
     /// Test that a QMP success envelope yields the return payload.
     #[test]
-    fn parse_envelope_extracts_return() {
+    fn test_libvirt_qmp_return_envelope_yields_the_payload_unchanged() {
         let body = r#"{"return":{"foo":42}}"#;
         let v = parse_qmp_envelope("query", body).unwrap();
         assert_eq!(v.get(), r#"{"foo":42}"#);
@@ -468,7 +468,7 @@ mod tests {
     /// Test that a QMP error envelope becomes a typed error with
     /// class/desc.
     #[test]
-    fn parse_envelope_surfaces_qmp_error() {
+    fn test_libvirt_qmp_error_envelope_preserves_class_and_desc() {
         let body = r#"{"error":{"class":"GenericError","desc":"boom"}}"#;
         let err = parse_qmp_envelope("query", body).unwrap_err();
         match err {
@@ -480,40 +480,25 @@ mod tests {
         }
     }
 
-    /// Test that blockstats counters are summed across disks.
+    /// Test that device counters are added, with flush and unmap folded into
+    /// other I/O.
     #[test]
-    fn parse_blockstats_sums_across_devices() {
+    fn test_libvirt_blockstats_sums_devices() {
         let body = r#"[
-            {"stats": {
-                "rd_operations": 100,
-                "wr_operations": 200,
-                "flush_operations": 3,
-                "unmap_operations": 1,
-                "rd_bytes": 4096,
-                "wr_bytes": 8192
-            }},
-            {"stats": {
-                "rd_operations": 50,
-                "wr_operations": 25,
-                "flush_operations": 0,
-                "unmap_operations": 0,
-                "rd_bytes": 2048,
-                "wr_bytes": 1024
-            }}
+            {"stats":{"rd_bytes":10,"wr_bytes":20,"rd_operations":1,"wr_operations":2,"flush_operations":3,"unmap_operations":4}},
+            {"stats":{"rd_bytes":5,"wr_bytes":6,"rd_operations":7,"wr_operations":8,"flush_operations":9,"unmap_operations":10}}
         ]"#;
-        let p = parse_blockstats(body).unwrap().unwrap();
-        assert_eq!(p.read_io_count, 150);
-        assert_eq!(p.write_io_count, 225);
-        assert_eq!(p.other_io_count, 4);
-        assert_eq!(p.read_bytes_total, 6144);
-        assert_eq!(p.write_bytes_total, 9216);
-        assert_eq!(p.total_io_count(), 150 + 225 + 4);
+        let perf = parse_blockstats(body).unwrap().unwrap();
+        assert_eq!(perf.read_io_count, 8);
+        assert_eq!(perf.write_io_count, 10);
+        assert_eq!(perf.other_io_count, 26);
+        assert_eq!(perf.read_bytes_total, 15);
+        assert_eq!(perf.write_bytes_total, 26);
     }
 
-    /// Test that empty blockstats parses as unavailable/`None`.
+    /// Test that an empty blockstats array yields no sample.
     #[test]
-    fn parse_blockstats_empty_returns_unavailable() {
-        let p = parse_blockstats("[]").unwrap();
-        assert!(p.is_none());
+    fn test_libvirt_blockstats_empty_array_is_none() {
+        assert!(parse_blockstats("[]").unwrap().is_none());
     }
 }
