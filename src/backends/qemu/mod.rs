@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
     config::{ConfigError, load_json_with_includes},
-    instance::{Instance, InstanceClient},
+    instance::{Instance, InstanceClient, ThreadNameFilter},
     util::Path,
 };
 
@@ -41,6 +41,10 @@ pub mod helpers;
 pub mod libvirt;
 
 const BACKEND_NAME: &str = "qemu";
+
+/// Task name QEMU gives each IOThread, `IO <id>`, provided threads are named
+/// (`-name debug-threads=on`, which libvirt sets).
+const IOTHREAD_NAME_PATTERN: &str = "^IO ";
 
 fn build_qemu_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
     Ok(Box::new(QemuBackend::from_config_dir(dir)?))
@@ -178,6 +182,8 @@ impl Backend for QemuBackend {
                 return Vec::new();
             }
         };
+        let iothread_filter = ThreadNameFilter::new(IOTHREAD_NAME_PATTERN, &[])
+            .expect("IOTHREAD_NAME_PATTERN is a valid regex");
         let mut out = Vec::with_capacity(uuids.len());
         for uuid in uuids {
             let pid = conn.qemu_host_pid(&uuid).await.unwrap_or(0);
@@ -212,12 +218,10 @@ impl Backend for QemuBackend {
             // it is purely informational (log context), so we
             // stuff the libvirt URI in there.
             let sock_path = Path::new(&self.cfg.libvirt_uri);
-            out.push(Arc::new(Instance::new(
-                uuid.to_string(),
-                sock_path,
-                pid,
-                client,
-            )));
+            out.push(Arc::new(
+                Instance::new(uuid.to_string(), sock_path, pid, client)
+                    .with_thread_name_filter(iothread_filter.clone()),
+            ));
         }
         out
     }

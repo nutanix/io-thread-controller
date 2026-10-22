@@ -150,13 +150,11 @@ impl QemuInstanceClient {
     async fn snapshot_from_cached_topology(
         &self,
     ) -> Result<ThreadPoolSnapshot, BackendClientError> {
-        let thread_count = {
-            let s = self.inner.lock().await;
-            s.iothreads.len() as u32
-        }
-        .max(1);
-
-        if thread_count == 1 {
+        let thread_count = match self.inner.lock().await.iothreads.len() {
+            0 => None,
+            count => Some(count as u32),
+        };
+        if thread_count.is_none() {
             tracing::debug!(
                 target: "qemu",
                 uuid = %self.uuid,
@@ -319,9 +317,8 @@ impl InstanceClient for QemuInstanceClient {
         {
             perf.per_vq_depth = Some(topo.vq_inflight.clone());
         }
-        let thread_count = topo.iothreads.len() as u32;
         Ok(ThreadPoolSnapshot {
-            thread_count,
+            thread_count: Some(topo.iothreads.len() as u32),
             perf,
             per_thread_util,
             vcpu_count: self.vcpu_count,

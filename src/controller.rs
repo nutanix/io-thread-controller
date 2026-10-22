@@ -604,7 +604,8 @@ impl Controller {
             };
             let status = instance.status.read().await;
             let current = status.thread_count;
-            if target == current {
+            // Zero means no refresh has counted the I/O threads yet.
+            if current == 0 || target == current {
                 continue;
             }
             plan.push((target > current, sequence, item.instance_id, action));
@@ -1215,7 +1216,7 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
+                thread_count: None,
                 vcpu_count: 4,
                 perf: None,
                 per_thread_util: None,
@@ -1503,7 +1504,7 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
+                thread_count: None,
                 vcpu_count: 16,
                 perf: None,
                 per_thread_util: Some(0.0),
@@ -1557,7 +1558,6 @@ mod tests {
     }
 
     struct SnapshotClient {
-        threads: u32,
         closed: Arc<AtomicUsize>,
     }
 
@@ -1569,8 +1569,7 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.threads,
-                // FIXME these weren't required, looked like broken due to rebase
+                thread_count: None,
                 vcpu_count: 2,
                 perf: None,
                 per_thread_util: None,
@@ -1631,12 +1630,12 @@ mod tests {
         }
     }
 
-    fn instance(id: &str, threads: u32, closed: Arc<AtomicUsize>) -> Arc<Instance> {
+    fn instance(id: &str, closed: Arc<AtomicUsize>) -> Arc<Instance> {
         Arc::new(Instance::new(
             id.to_string(),
             Path::new(""),
             1,
-            SnapshotClient { threads, closed },
+            SnapshotClient { closed },
         ))
     }
 
@@ -1663,7 +1662,7 @@ mod tests {
         .unwrap();
         let closed = Arc::new(AtomicUsize::new(0));
 
-        let first = instance("vm-a", 1, Arc::clone(&closed));
+        let first = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller
             .sync_instances(vec![Arc::clone(&first)])
             .await
@@ -1672,7 +1671,7 @@ mod tests {
         assert_eq!(controller.instances.len(), 1);
         assert_eq!(added.load(Ordering::Relaxed), 1);
 
-        let duplicate = instance("vm-a", 9, Arc::clone(&closed));
+        let duplicate = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller.sync_instances(vec![duplicate]).await.unwrap();
         assert_eq!((n_added, n_removed), (0, 0));
         assert_eq!(controller.instances.len(), 1);
@@ -1708,7 +1707,7 @@ mod tests {
         .unwrap();
 
         let closed = Arc::new(AtomicUsize::new(0));
-        let ok = instance("ok", 4, Arc::clone(&closed));
+        let ok = instance("ok", Arc::clone(&closed));
         let bad = Arc::new(Instance::new(
             "bad".to_string(),
             Path::new(""),
@@ -1722,11 +1721,69 @@ mod tests {
         assert_eq!(controller.tick_index, 1);
         assert_eq!(controller.instances.len(), 1);
         assert!(controller.instances.contains_key("ok"));
-        assert_eq!(
-            controller.instances["ok"].status.read().await.thread_count,
-            4
-        );
+        assert!(controller.instances["ok"].status.read().await.alive);
         assert_eq!(evaluated.load(Ordering::Relaxed), 1);
         assert_eq!(removed.load(Ordering::Relaxed), 1);
+    }
+
+    struct ProposingEngine;
+
+    #[async_trait]
+    impl ScalingEngine for ProposingEngine {
+        fn name(&self) -> &'static str {
+            "proposing"
+        }
+
+        fn dump_config(&self) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+
+        async fn evaluate(
+            &self,
+            _instance: &Arc<Instance>,
+            _context: &EngineTickContext,
+        ) -> ScaleAction {
+            ScaleAction::Up(2)
+        }
+
+        async fn on_instance_added(&self, _instance: &Arc<Instance>) {}
+
+        async fn on_instance_removed(&self, _instance_id: &str) {}
+    }
+
+    /// Tests that no engine decision is applied to a VM whose I/O threads
+    /// haven't been counted in `/proc` yet.
+    #[test(tokio::test)]
+    async fn test_tick_skips_vm_with_uncounted_threads() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            cooldown_secs: 0.0,
+            host_cpu_scale_up_ceiling: 0.0,
+            ..Default::default()
+        };
+        let mut controller = Controller::new(cfg, Box::new(ProposingEngine)).unwrap();
+        let target = Arc::new(AtomicU32::new(7));
+        // PID 0 has no `/proc` entry, so refreshing never counts its threads.
+        let instance = Arc::new(Instance::new(
+            "vm-uncounted".to_string(),
+            Path::new(""),
+            0,
+            VcpuLimitedClient {
+                target: Arc::clone(&target),
+            },
+        ));
+        controller
+            .sync_instances(vec![Arc::clone(&instance)])
+            .await
+            .unwrap();
+        instance.status.write().await.ownership_classification = Some(true);
+
+        controller.tick().await.unwrap();
+        assert_eq!(target.load(Ordering::Relaxed), 7);
+
+        instance.status.write().await.thread_count = 1;
+        controller.tick().await.unwrap();
+        assert_eq!(target.load(Ordering::Relaxed), 2);
     }
 }

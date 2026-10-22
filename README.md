@@ -92,9 +92,15 @@ before the including file's keys are applied.
 
 ## Thread-name filtering
 
-Backends may select fallback `/proc` CPU samples with regular expressions and
-an exact-name ignore list. Exact ignores take precedence; when no match
-expressions are configured, every nonignored task is sampled.
+Each backend tells the controller which of its tasks are I/O workers, using
+regular expressions and an exact-name ignore list. Exact ignores take
+precedence; when no match expressions are configured, every nonignored task is
+a worker. On every refresh the controller counts the matching tasks in `/proc`
+to determine the current thread count, and samples their CPU usage unless the
+backend reports per-thread utilisation itself. Backends may also report the
+thread count, but the controller currently ignores it. If no task matches, the
+controller keeps the previous count. Until a VM's threads have been counted,
+its initial pool is not classified and no engine decision is applied to it.
 
 ## Scale-up state machine
 
@@ -155,6 +161,10 @@ The QEMU backend discovers active VMs through libvirt and sends QMP commands
 through `virDomainQemuMonitorCommand`. Its configuration is loaded from
 `backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
 or changed through the backend CLI and D-Bus operations.
+
+The I/O workers are the QEMU tasks named `IO <iothread id>`. QEMU names its
+threads only when started with `-name debug-threads=on`, which libvirt sets;
+without it no task matches and the VM is never scaled.
 
 ## Cgroup throttling
 
