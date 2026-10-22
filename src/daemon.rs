@@ -73,11 +73,12 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
     if cfg.print_status_header {
         tracing::info!(
             target: "status",
-            "# per-VM line: status=<threads> <read_iops>/<write_iops>/<other_iops> \
-             <iops_1m>/<iops_5m>/<iops_15m> <read_mb_s>/<write_mb_s> \
-             <cpu_average>/<cpu_median>/<cpu_total> \
-             <read_lat_us_p50>/<p95>/<p99>/<avg> <write_lat_us_p50>/<p95>/<p99>/<avg> \
-             <cpu_us_per_io_1m>/<5m>/<15m>"
+            "# per-VM line: status=<threads> <read IOPS> <write IOPS> <other IOPS> \
+             <IOPS 1m> <IOPS 5m> <IOPS 15m> <read BW MB/s> <write BW MB/s> \
+             <average CPU> <median CPU> <total CPU> \
+             <read lat us p50> <read lat us p95> <read lat us p99> <read lat us avg> \
+             <write lat us p50> <write lat us p95> <write lat us p99> <write lat us avg> \
+             <us/IOP 1m> <us/IOP 5m> <us/IOP 15m>"
         );
         tracing::info!(
             target: "status",

@@ -179,28 +179,29 @@ on the `status` tracing target. With `--print-status-header`, it also emits a
 
 By default each VM's line is appended to
 `/var/log/io-thread-controller/vms/<vm>.log`, so the line itself does not repeat
-the VM identifier. Fields are positional, without keys. The examples are
-wrapped with backslashes for readability; each emitted record occupies one
-line.
+the VM identifier. Fields are positional, without keys, and separated by single
+spaces. The examples are wrapped with backslashes for readability; each emitted
+record occupies one line.
 
 ```
-2026-01-01T00:00:00.000Z status=4 155593/0/0 154995/153840/151220 \
-  20394/0 90/87/358 40/80/120/45 - 23/16/19
+2026-01-01T00:00:00.000Z status=4 155593 0 0 154995 153840 151220 \
+  20394 0 90 87 358 40 80 120 45 - - - - 23 16 19
 ```
 
 After the leading timestamp, the `status=` prefix distinguishes status records
 from `event=` records, and the fields are:
 
 1. matched worker threads.
-2. current read / write / other operations per second.
-3. average total IOPS over rolling 1m / 5m / 15m windows.
-4. current read / write bandwidth in MB/s.
-5. average / median / total worker CPU percentage.
-6. read latency p50 / p95 / p99 / average in microseconds.
-7. write latency p50 / p95 / p99 / average in microseconds.
-8. CPU microseconds per completed I/O over rolling 1m / 5m / 15m windows.
+2. current read, write, and other operations per second (3 fields).
+3. average total IOPS over rolling 1m, 5m, and 15m windows (3 fields).
+4. current read and write bandwidth in MB/s (2 fields).
+5. average, median, and total worker CPU percentage (3 fields).
+6. read latency p50, p95, p99, and average in microseconds (4 fields).
+7. write latency p50, p95, p99, and average in microseconds (4 fields).
+8. CPU microseconds per completed I/O over rolling 1m, 5m, and 15m windows (3
+   fields).
 
-A dash (`-`) means no complete sample is available for that window.
+A dash (`-`) means no sample is available for that field.
 
 ### Aggregate line
 
