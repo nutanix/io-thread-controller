@@ -75,7 +75,10 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
             target: "status",
             "# <threads> <read IOPS> <write IOPS> <other IOPS> \
              <IOPS 1m> <IOPS 5m> <IOPS 15m> <read BW MB/s> <write BW MB/s> \
-             <average CPU> <total CPU> <us/IOP 1m> <us/IOP 5m> <us/IOP 15m>"
+             <average CPU> <median CPU> <total CPU> \
+             <read lat us p50> <read lat us p95> <read lat us p99> <read lat us avg> \
+             <write lat us p50> <write lat us p95> <write lat us p99> <write lat us avg> \
+             <us/IOP 1m> <us/IOP 5m> <us/IOP 15m>"
         );
         tracing::info!(
             target: "status",
