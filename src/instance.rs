@@ -203,7 +203,7 @@ impl Instance {
     }
 
     /// Refresh one VM and mark its client broken on failure.
-    #[tracing::instrument(level = "debug", skip(self), fields(id = %self.id))]
+    #[tracing::instrument(level = "trace", skip(self), fields(id = %self.id))]
     pub async fn refresh_state(&self, refresh_cgroup: bool) -> bool {
         match self.client.get_thread_pool_snapshot().await {
             Ok(snapshot) => {
