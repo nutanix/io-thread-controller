@@ -209,10 +209,15 @@ INFO status: 1 4 154995/153840/151220
 ```
 
 `status:` is the tracing target, which separates status lines from the
-`controller` and `engine` targets. The fields are the current VM count, their
-combined worker count, and the
-aggregate IOPS over rolling 1m / 5m / 15m windows, each cell being the sum of
-the corresponding per-VM rolling rate.
+`controller` and `engine` targets. The space-separated fields are:
+
+1. the current VM count,
+2. their combined IO thread count, and
+3. the aggregate IOPS over a rolling 1 minute window,
+4. the aggregate IOPS over a rolling 5 minute window,
+5. the aggregate IOPS over a rolling 15 minute window,
+
+Each cell is the sum of the corresponding per-VM rolling rate.
 
 ### Scaling verdicts
 
