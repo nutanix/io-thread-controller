@@ -325,8 +325,8 @@ mod tests {
     use super::*;
 
     proptest! {
-        /// Test that vQ round-robin mapping spreads queues across IOThreads
-        /// as evenly as possible.
+        /// Test that vQ round-robin mapping spreads queues across IOThreads as
+        /// evenly as possible.
         #[test]
         fn test_qemu_round_robin_partitions_queues(
             ids in prop::collection::vec("[a-z]{1,4}", 0..8),
@@ -373,8 +373,8 @@ mod tests {
         }
     }
 
-    /// Test that managed `iotN` threads are kept in id order and other ids are
-    /// dropped.
+    /// Test that managed `iotN` threads are kept in id order and other ids
+    /// are dropped.
     #[test]
     fn test_qemu_topology_keeps_managed_threads_in_id_order() {
         let body = r#"

@@ -1142,11 +1142,10 @@ mod tests {
         async fn close(&self) {}
     }
 
-    /// Test that actuation will not raise the pool above the VM vCPU
-    /// count.
+    /// Test that actuation will not raise the pool above the VM vCPU count.
     #[rstest]
     #[tokio::test]
-    async fn actuation_enforces_vcpu_cap(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_actuation_enforces_vcpu_cap(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
             vm_state_path: PrefixedPath::new("/ownership.json"),
             cooldown_secs: 0,
@@ -1209,7 +1208,7 @@ mod tests {
     /// and blocks scale-up when host CPU is above the ceiling.
     #[rstest]
     #[tokio::test]
-    async fn actuation_enforces_controller_bounds_and_host_ceiling(
+    async fn test_controller_actuation_enforces_controller_bounds_and_host_ceiling(
         #[from(mockdir)] _mockdir: MockDir,
     ) {
         let cfg = Config {
@@ -1281,7 +1280,9 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     #[rstest]
     #[tokio::test]
-    async fn revert_arms_cooldown_blocking_immediate_retry(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_revert_arms_cooldown_blocking_immediate_retry(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let cfg = Config {
             vm_state_path: PrefixedPath::new("/ownership.json"),
             cooldown_secs: 30,
@@ -1338,7 +1339,7 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     #[rstest]
     #[tokio::test]
-    async fn revert_bypasses_existing_cooldown(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_revert_bypasses_existing_cooldown(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
             vm_state_path: PrefixedPath::new("/ownership.json"),
             cooldown_secs: 60,
@@ -1550,8 +1551,8 @@ mod tests {
         ))
     }
 
-    /// Test that the per-VM status line has a fixed number of
-    /// space-separated fields whether or not samples are available.
+    /// Test that the per-VM status line has a fixed number of space-separated
+    /// fields whether or not samples are available.
     #[test]
     fn test_per_vm_status_line_has_fixed_space_separated_fields() {
         let mut status = InstanceStatus::default();
@@ -1570,11 +1571,13 @@ mod tests {
         assert!(full.contains(" 1 2 3 4 - - - - "), "{full}");
     }
 
-    /// Test that discovery sync adds new VMs, retains existing ones,
-    /// and removes disappeared ones.
+    /// Test that discovery sync adds new VMs, retains existing ones, and
+    /// removes disappeared ones.
     #[rstest]
     #[tokio::test]
-    async fn sync_instances_adds_retains_and_removes(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_constroller_sync_instances_adds_retains_and_removes(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let added = Arc::new(AtomicUsize::new(0));
         let removed = Arc::new(AtomicUsize::new(0));
         let evaluated = Arc::new(AtomicUsize::new(0));
@@ -1635,8 +1638,8 @@ mod tests {
         (per_vm_log, dir, guard)
     }
 
-    /// Return the records of one VM's per-VM log that carry an `event`
-    /// field, without timestamps.
+    /// Return the records of one VM's per-VM log that carry an `event` field,
+    /// without timestamps.
     fn per_vm_log_events(per_vm_log: &PerVmLog, vm: &str) -> Vec<String> {
         std::fs::read_to_string(per_vm_log.path(vm).unwrap())
             .unwrap()
@@ -1647,11 +1650,11 @@ mod tests {
             .collect()
     }
 
-    /// Test that one tick refreshes state, runs the engine, and drops
-    /// instances that fail refresh.
+    /// Test that one tick refreshes state, runs the engine, and drops instances
+    /// that fail to refresh.
     #[rstest]
     #[tokio::test]
-    async fn tick_refreshes_evaluates_and_drops_failed_instances(
+    async fn test_controller_tick_refreshes_evaluates_and_drops_failed_instances(
         #[from(mockdir)] _mockdir: MockDir,
     ) {
         let added = Arc::new(AtomicUsize::new(0));

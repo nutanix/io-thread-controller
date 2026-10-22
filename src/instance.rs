@@ -807,10 +807,9 @@ mod tests {
         }
     }
 
-    /// Test that a successful client snapshot updates
-    /// alive/thread_count state.
+    /// Test that a successful client snapshot updates alive/thread_count state.
     #[tokio::test]
-    async fn refresh_state_applies_successful_snapshot() {
+    async fn test_instance_refresh_state_applies_successful_snapshot() {
         let instance = Instance::new(
             "vm-ok".to_string(),
             PrefixedPath::new(""),
@@ -823,10 +822,9 @@ mod tests {
         assert_eq!(status.thread_count, 3);
     }
 
-    /// Test that client errors mark the instance dead and close the
-    /// client.
+    /// Test that client errors mark the instance dead and close the client.
     #[tokio::test]
-    async fn refresh_state_marks_failed_instances_dead_and_closes() {
+    async fn test_instance_refresh_marks_failed_instances_dead_and_closes() {
         let closed = Arc::new(AtomicBool::new(false));
         let instance = Instance::new(
             "vm-bad".to_string(),
@@ -844,7 +842,7 @@ mod tests {
 
     /// Test that `Display` for an instance prints the bare VM id.
     #[test]
-    fn display_trims_instance_id() {
+    fn test_display_trims_instance_id() {
         let instance = Instance::new(
             "  vm-1  ".to_string(),
             PrefixedPath::new(""),
@@ -853,10 +851,6 @@ mod tests {
         );
         assert_eq!(instance.to_string(), "vm-1");
     }
-
-    use super::{TaskCpuSample, compute_per_worker_util};
-
-    use super::ThreadNameFilter;
 
     /// Test that exact `IgnoreThreadNames` wins over a matching regex
     /// allowlist.
@@ -876,28 +870,39 @@ mod tests {
         }
     }
 
-    /// Test that two workers sharing a name still get independent
-    /// CPU-delta util samples.
+    /// Test that utilization is calculated as change in CPU ticks divided by
+    /// elapsed ticks.
     #[test]
-    fn duplicate_worker_names_keep_independent_deltas() {
-        let previous = vec![task(10, "worker", 100), task(11, "worker", 200)];
-        let current = vec![task(11, "worker", 400), task(10, "worker", 200)];
-
-        let util = compute_per_worker_util(&previous, &current, 500.0);
-        assert_eq!(util.len(), 2);
-        assert!((util[0].1 - 0.4).abs() < f64::EPSILON);
-        assert!((util[1].1 - 0.2).abs() < f64::EPSILON);
+    fn test_util_is_tick_delta_divided_by_wall_ticks() {
+        let previous = vec![task(10, "a", 100), task(11, "b", 0)];
+        let current = vec![task(11, "b", 25), task(10, "a", 150)];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![
+                ("b".to_string(), (25.0 - 0.0) / 100.0),
+                ("a".to_string(), (150.0 - 100.0) / 100.0),
+            ]
+        );
     }
 
-    /// Test that a newly appeared worker does not spike util from
-    /// lifetime counters.
+    /// Test that a renamed task, an unknown tid, and a backwards counter are
+    /// all dropped.
     #[test]
-    fn new_worker_starts_without_a_lifetime_spike() {
-        let previous = vec![task(10, "worker0", 100)];
-        let current = vec![task(10, "worker0", 200), task(11, "worker1", 900_000)];
-
-        let util = compute_per_worker_util(&previous, &current, 500.0);
-        assert_eq!(util.len(), 1);
-        assert!((util[0].1 - 0.2).abs() < f64::EPSILON);
+    fn test_util_drops_unmatched_tasks() {
+        let previous = vec![
+            task(1, "old", 100),
+            task(2, "kept", 50),
+            task(3, "back", 200),
+        ];
+        let current = vec![
+            task(1, "new", 150),
+            task(9, "unknown", 10),
+            task(3, "back", 100),
+            task(2, "kept", 75),
+        ];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![("kept".to_string(), 0.25)]
+        );
     }
 }
