@@ -179,35 +179,45 @@ on the `status` tracing target. With `--print-status-header`, it also emits a
 
 By default each VM's line is appended to
 `/var/log/io-thread-controller/vms/<vm>.log`, so the line itself does not repeat
-the VM identifier. The examples are wrapped with backslashes for readability;
-each emitted record occupies one line.
+the VM identifier. Fields are positional, without keys. The examples are
+wrapped with backslashes for readability; each emitted record occupies one
+line.
 
 ```
-2026-01-01T00:00:00.000Z event=vm_status thr=4 iops=155593/0/0 \
-  bw_mb_s=20394/0 cpu=90/87/358 iops_1_5_15m=154995/153840/151220 \
-  cpu_us_per_io_1_5_15m=23/16/19
+2026-01-01T00:00:00.000Z status=4 155593/0/0 154995/153840/151220 \
+  20394/0 90/87/358 40/80/120/45 - 23/16/19
 ```
 
-- `thr`: matched worker threads.
-- `iops`: current read / write / other operations per second.
-- `iops_1_5_15m`: average total IOPS over rolling 1m / 5m / 15m windows.
-- `bw_mb_s`: current read / write bandwidth in MB/s.
-- `cpu`: average / median / total worker CPU percentage.
-- `cpu_us_per_io_1_5_15m`: CPU microseconds per completed I/O over the same
-  windows.
+After the leading timestamp, the `status=` prefix distinguishes status records
+from `event=` records, and the fields are:
+
+1. matched worker threads.
+2. current read / write / other operations per second.
+3. average total IOPS over rolling 1m / 5m / 15m windows.
+4. current read / write bandwidth in MB/s.
+5. average / median / total worker CPU percentage.
+6. read latency p50 / p95 / p99 / average in microseconds.
+7. write latency p50 / p95 / p99 / average in microseconds.
+8. CPU microseconds per completed I/O over rolling 1m / 5m / 15m windows.
 
 A dash (`-`) means no complete sample is available for that window.
 
 ### Aggregate line
 
 ```
-INFO tracked=1 total_threads=4 \
-  iops_1_5_15m=154995/153840/151220 aggregate
+INFO status: 1 4 154995/153840/151220
 ```
 
-`tracked` is the current VM count, `total_threads` is their combined worker
-count, and each aggregate IOPS cell is the sum of the corresponding per-VM
-rolling rate.
+`status:` is the tracing target, which separates status lines from the
+`controller` and `engine` targets. The space-separated fields are:
+
+1. the current VM count,
+2. their combined IO thread count, and
+3. the aggregate IOPS over a rolling 1 minute window,
+4. the aggregate IOPS over a rolling 5 minute window,
+5. the aggregate IOPS over a rolling 15 minute window,
+
+Each cell is the sum of the corresponding per-VM rolling rate.
 
 ### Scaling verdicts
 

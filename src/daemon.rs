@@ -73,14 +73,15 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
     if cfg.print_status_header {
         tracing::info!(
             target: "status",
-            "# thr=<threads> iops=<read>/<write>/<other> \
-             iops_1_5_15m=<1m>/<5m>/<15m> bw_mb_s=<read>/<write> \
-             cpu=<average>/<total> cpu_us_per_io_1_5_15m=<1m>/<5m>/<15m>"
+            "# per-VM line: status=<threads> <read_iops>/<write_iops>/<other_iops> \
+             <iops_1m>/<iops_5m>/<iops_15m> <read_mb_s>/<write_mb_s> \
+             <cpu_average>/<cpu_median>/<cpu_total> \
+             <read_lat_us_p50>/<p95>/<p99>/<avg> <write_lat_us_p50>/<p95>/<p99>/<avg> \
+             <cpu_us_per_io_1m>/<5m>/<15m>"
         );
         tracing::info!(
             target: "status",
-            "# aggregate tracked=<instances> threads=<threads> \
-             iops_1_5_15m=<1m>/<5m>/<15m>"
+            "# aggregate line: <instances> <threads> <iops_1m>/<iops_5m>/<iops_15m>"
         );
     }
     let engine = load_registered_engine(&cfg.engine_config_dir, &cfg.engine)?;

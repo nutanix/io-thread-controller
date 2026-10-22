@@ -961,10 +961,10 @@ impl Controller {
                 std::array::from_fn(|idx| aggregate_has_iops[idx].then_some(aggregate_iops[idx]));
             tracing::info!(
                 target: "status",
-                tracked = self.instances.len(),
+                "{} {} {}",
+                self.instances.len(),
                 total_threads,
-                iops_1_5_15m = %format_optional_cells(aggregate),
-                "aggregate"
+                format_optional_cells(aggregate)
             );
         }
     }
@@ -975,7 +975,7 @@ impl Controller {
     ) -> String {
         let cpu = compute_cpu_stats(status);
         format!(
-            "event=vm_status thr={} iops={}/{}/{} iops_1_5_15m={} bw_mb_s={}/{} cpu={}/{}/{} lat_us_r={} lat_us_w={} cpu_us_per_io_1_5_15m={}",
+            "status={} {}/{}/{} {} {}/{} {}/{}/{} {} {} {}",
             status.thread_count,
             status.read_iops,
             status.write_iops,
