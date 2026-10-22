@@ -25,6 +25,7 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
+    per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
