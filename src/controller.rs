@@ -987,7 +987,7 @@ impl Controller {
             cpu.total_pct,
             format_latency_cell(status.read_latency_us, " "),
             format_latency_cell(status.write_latency_us, " "),
-            &status
+            status
                 .rolling
                 .format_1_5_15(|rolling, window| rolling.cpu_us_per_io_over(window), " "),
         )
