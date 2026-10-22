@@ -27,7 +27,6 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
-    per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
     util::Path,
 };
