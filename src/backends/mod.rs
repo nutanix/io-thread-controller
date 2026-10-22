@@ -415,7 +415,7 @@ mod tests {
         let socket_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(socket_dir.path().join("vm-a")).unwrap();
         let sock_path = socket_dir.path().join("vm-a").join("ctl");
-        let listener = bind(&sock_path);
+        let mut listener = bind(&sock_path);
 
         let instances = discover(socket_dir.path()).await;
         assert_eq!(instances.len(), 1);
@@ -426,9 +426,11 @@ mod tests {
         assert_eq!(discover(socket_dir.path()).await.len(), 1);
         assert_eq!(pending(&listener), 0);
 
-        drop(listener);
+        // Keep the old socket inode alive while rebinding so the filesystem
+        // cannot hand the same inode number to the new socket.
         std::fs::remove_file(&sock_path).unwrap();
-        let listener = bind(&sock_path);
+        let old_listener = std::mem::replace(&mut listener, bind(&sock_path));
+        drop(old_listener);
         assert_eq!(discover(socket_dir.path()).await.len(), 1);
         assert_eq!(pending(&listener), 1);
 
