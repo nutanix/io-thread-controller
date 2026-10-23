@@ -313,7 +313,7 @@ mod tests {
     /// Test that registry loads the threshold engine by name and errors
     /// on unknown engines.
     #[test]
-    fn test_load_registered_engine_finds_threshold_and_rejects_unknown() {
+    fn test_engine_load_finds_threshold_and_rejects_unknown() {
         let dir = Path::new("/tmp/missing-engines");
         let engine = load_registered_engine(&dir, "threshold").unwrap();
         assert_eq!(engine.name(), "threshold");
