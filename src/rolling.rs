@@ -81,43 +81,6 @@ impl RollingMetrics {
         self.trim(now);
     }
 
-    /// Append an interval from backend-computed per-thread utilisation.
-    pub fn push_from_backend_util(
-        &mut self,
-        now: Instant,
-        io_ops_cumulative: u64,
-        per_thread_util: f64,
-        thread_count: u32,
-    ) {
-        let (Some(previous_wall_ts), Some(previous_io_ops)) =
-            (self.previous_wall_ts, self.previous_io_ops)
-        else {
-            self.set_backend_baseline(now, io_ops_cumulative);
-            return;
-        };
-        let Some(elapsed) = now.checked_duration_since(previous_wall_ts) else {
-            self.set_backend_baseline(now, io_ops_cumulative);
-            return;
-        };
-        if io_ops_cumulative < previous_io_ops {
-            self.set_backend_baseline(now, io_ops_cumulative);
-            return;
-        }
-
-        let wall_dt_ns = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-        let cpu_ns_delta =
-            (wall_dt_ns as f64 * per_thread_util.clamp(0.0, 1.0) * f64::from(thread_count))
-                .min(u64::MAX as f64) as u64;
-        self.samples.push_back(TickSample {
-            wall_ts: now,
-            io_ops_delta: io_ops_cumulative - previous_io_ops,
-            cpu_ns_delta,
-            wall_dt_ns,
-        });
-        self.set_backend_baseline(now, io_ops_cumulative);
-        self.trim(now);
-    }
-
     /// Append an already-computed delta, used by fleet aggregation.
     pub fn push_delta(&mut self, now: Instant, io_ops_delta: u64, cpu_ns_delta: u64) {
         let Some(previous_wall_ts) = self.previous_wall_ts else {
@@ -174,12 +137,6 @@ impl RollingMetrics {
         self.previous_wall_ts = Some(now);
         self.previous_io_ops = Some(io_ops);
         self.previous_cpu_ticks = Some(cpu_ticks);
-    }
-
-    fn set_backend_baseline(&mut self, now: Instant, io_ops: u64) {
-        self.previous_wall_ts = Some(now);
-        self.previous_io_ops = Some(io_ops);
-        self.previous_cpu_ticks = None;
     }
 
     fn trim(&mut self, now: Instant) {

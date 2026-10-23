@@ -14,9 +14,11 @@ from harness.mockfs import MockProc
 
 
 @pytest.fixture
-def json_backend(tmp_path):
+def json_backend(tmp_path, mock_proc):
     """Create a new JsonBackend running at ``tmp_path``."""
-    return JsonBackend(tmp_path)
+    backend = JsonBackend(tmp_path, mock_proc)
+    yield backend
+    backend.stop()
 
 
 @pytest.fixture
@@ -37,9 +39,9 @@ def mock_proc(tmp_path, dbus_server):
 
 
 @pytest.fixture
-def controller(tmp_path, fake_backend, dbus_server):
+def controller(tmp_path, json_backend, dbus_server):
     """Start up a new `io-thread-controller`."""
-    del fake_backend
+    del json_backend
     launched = Controller(tmp_path, built_binary("io-thread-controller"), dbus_server)
     yield launched
     launched.stop()
