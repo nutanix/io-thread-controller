@@ -1000,7 +1000,7 @@ mod tests {
     /// Test that an IOPS-rate drop after scale-up triggers revert.
     #[rstest]
     #[tokio::test]
-    async fn scale_up_revert_fires_on_iops_rate_drop(
+    async fn test_scale_up_revert_fires_on_iops_rate_drop(
         engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1035,7 +1035,7 @@ mod tests {
     /// revert.
     #[rstest]
     #[tokio::test]
-    async fn scale_up_flat_rate_reverts(
+    async fn test_scale_up_flat_rate_reverts(
         engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1069,7 +1069,7 @@ mod tests {
     /// Test that a sufficient post-scale IOPS-rate gain keeps the scale-up.
     #[rstest]
     #[tokio::test]
-    async fn scale_up_rate_gain_keeps_scale(
+    async fn test_scale_up_rate_gain_keeps_scale(
         engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1233,7 +1233,7 @@ mod tests {
     /// (demand left; IOPS collapse is expected).
     #[rstest]
     #[tokio::test]
-    async fn scale_down_keeps_shrink_when_util_stays_low(#[future] instance: Arc<Instance>) {
+    async fn test_scale_down_keeps_shrink_when_util_stays_low(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig {
             scale_up_threshold: 0.8,
@@ -1271,7 +1271,7 @@ mod tests {
     /// remains) but IOPS fell beyond the tolerated drop.
     #[rstest]
     #[tokio::test]
-    async fn scale_down_reverts_when_util_stays_high_and_iops_drop(
+    async fn test_scale_down_reverts_when_util_stays_high_and_iops_drop(
         #[future] instance: Arc<Instance>,
     ) {
         let instance = instance.await;
@@ -1489,7 +1489,7 @@ mod tests {
     /// Test that percent fields serde as human percents on the wire and
     /// fractions in memory.
     #[test]
-    fn percent_wire_format_round_trips() {
+    fn test_percent_wire_format_round_trips() {
         let config: ThresholdConfig =
             serde_json::from_str(r#"{"scale_up_min_gain_percent":10}"#).unwrap();
         assert!((config.scale_up_min_gain - 0.10).abs() < f64::EPSILON);
@@ -1518,7 +1518,7 @@ mod tests {
     /// scale-ups are suppressed.
     #[rstest]
     #[test(tokio::test)]
-    async fn no_scale_up_during_pending_validation(
+    async fn test_no_scale_up_during_pending_validation(
         engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1575,7 +1575,7 @@ mod tests {
     /// performance doesn't increase much.
     #[rstest]
     #[test(tokio::test)]
-    async fn pending_validation_reverts_regressive_scale(
+    async fn test_pending_validation_reverts_regressive_scale(
         _engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1627,7 +1627,7 @@ mod tests {
     /// Test that scale-up decision logs current/min IOPS and validation delay.
     #[rstest]
     #[tokio::test]
-    async fn scale_up_log_includes_iops_targets(
+    async fn test_scale_up_log_includes_iops_targets(
         engine: ThresholdEngine,
         #[future] instance: Arc<Instance>,
     ) {
@@ -1663,7 +1663,7 @@ mod tests {
     /// Test that a missing `threshold.json` still builds an engine with
     /// defaults.
     #[test]
-    fn missing_config_file_uses_defaults() {
+    fn test_missing_config_file_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let engine =
             ThresholdEngine::from_config_dir(&Path::new(dir.path().to_str().unwrap())).unwrap();
@@ -1675,7 +1675,7 @@ mod tests {
     /// Hold/`None`.
     #[rstest]
     #[tokio::test]
-    async fn evaluate_holds_when_util_below_thresholds(#[future] instance: Arc<Instance>) {
+    async fn test_evaluate_holds_when_util_below_thresholds(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
         let engine = ThresholdEngine::new(ThresholdConfig::default());
         let action = engine

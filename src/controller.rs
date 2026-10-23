@@ -1191,7 +1191,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use test_log::test;
+    use rstest::rstest;
 
     use super::*;
     use crate::{
@@ -1233,7 +1233,7 @@ mod tests {
     /// count.
     #[rstest]
     #[tokio::test]
-    async fn actuation_enforces_vcpu_cap(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_actuation_enforces_vcpu_cap(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
             vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 0.0,
@@ -1301,7 +1301,7 @@ mod tests {
     /// and blocks scale-up when host CPU is above the ceiling.
     #[rstest]
     #[tokio::test]
-    async fn actuation_enforces_controller_bounds_and_host_ceiling(
+    async fn test_controller_actuation_enforces_controller_bounds_and_host_ceiling(
         #[from(mockdir)] _mockdir: MockDir,
     ) {
         let cfg = Config {
@@ -1378,7 +1378,9 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     #[rstest]
     #[tokio::test]
-    async fn revert_arms_cooldown_blocking_immediate_retry(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_revert_arms_cooldown_blocking_immediate_retry(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let cfg = Config {
             vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 30.0,
@@ -1440,7 +1442,7 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     #[rstest]
     #[tokio::test]
-    async fn revert_bypasses_existing_cooldown(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_revert_bypasses_existing_cooldown(#[from(mockdir)] _mockdir: MockDir) {
         let cfg = Config {
             vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 60.0,
@@ -1648,11 +1650,13 @@ mod tests {
         ))
     }
 
-    /// Test that discovery sync adds new VMs, retains existing ones,
-    /// and removes disappeared ones.
+    /// Test that discovery sync adds new VMs, retains existing ones, and
+    /// removes disappeared ones.
     #[rstest]
     #[tokio::test]
-    async fn sync_instances_adds_retains_and_removes(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_constroller_sync_instances_adds_retains_and_removes(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let added = Arc::new(AtomicUsize::new(0));
         let removed = Arc::new(AtomicUsize::new(0));
         let evaluated = Arc::new(AtomicUsize::new(0));
@@ -1693,11 +1697,11 @@ mod tests {
         assert_eq!(evaluated.load(Ordering::Relaxed), 0);
     }
 
-    /// Test that one tick refreshes state, runs the engine, and drops
-    /// instances that fail refresh.
+    /// Test that one tick refreshes state, runs the engine, and drops instances
+    /// that fail refresh.
     #[rstest]
     #[tokio::test]
-    async fn tick_refreshes_evaluates_and_drops_failed_instances(
+    async fn test_controller_tick_refreshes_evaluates_and_drops_failed_instances(
         #[from(mockdir)] _mockdir: MockDir,
     ) {
         let added = Arc::new(AtomicUsize::new(0));
