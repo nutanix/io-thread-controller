@@ -87,7 +87,6 @@ impl FakeConfig {
 struct VmFile {
     thread_count: u32,
     vcpu_count: u32,
-    per_thread_util: f64,
     /// First-snapshot ownership. `true` lets the controller scale the VM.
     managed: bool,
     fail_snapshot: bool,
@@ -101,7 +100,6 @@ impl Default for VmFile {
         Self {
             thread_count: 1,
             vcpu_count: 1,
-            per_thread_util: 0.0,
             managed: true,
             fail_snapshot: false,
             read_io_count: 0,
@@ -162,6 +160,7 @@ fn discover_vms(state_dir: &Path) -> Vec<Arc<Instance>> {
         let Some(vm) = read_vm(&path, id) else {
             continue;
         };
+        let pid = fake_pid(id);
         let client = FakeClient {
             vm_path: path.clone(),
             calls_path: state_dir.join("calls.json"),
@@ -170,7 +169,7 @@ fn discover_vms(state_dir: &Path) -> Vec<Arc<Instance>> {
         instances.push(Arc::new(Instance::new(
             id.to_string(),
             Path::new(id),
-            0,
+            pid,
             client,
         )));
     }
@@ -189,6 +188,13 @@ struct FakeClient {
     vm_path: std::path::PathBuf,
     calls_path: std::path::PathBuf,
     managed: bool,
+}
+
+fn fake_pid(id: &str) -> i32 {
+    let hash = id.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    10_000 + (hash % 1_000_000) as i32
 }
 
 /// `<vm-id>.json` shares `<vm-id>.lock` with the pytest harness.
@@ -267,7 +273,6 @@ impl InstanceClient for FakeClient {
             )));
         }
         Ok(ThreadPoolSnapshot {
-            thread_count: vm.thread_count,
             vcpu_count: vm.vcpu_count,
             perf: Some(InstancePerfSample {
                 read_io_count: vm.read_io_count,
@@ -277,7 +282,6 @@ impl InstanceClient for FakeClient {
                 write_bytes_total: 0,
                 ..Default::default()
             }),
-            per_thread_util: Some(vm.per_thread_util),
         })
     }
 

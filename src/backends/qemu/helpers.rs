@@ -6,8 +6,8 @@
 //! Shared QEMU helpers.
 //!
 //! Everything here is transport-neutral: prometheus-body topology
-//! parsing, /proc jiffies sampling, VQ round-robin, iothread id
-//! allocation, and the [`QemuError`] shape used by the QMP
+//! parsing, VQ round-robin, iothread id allocation, and the [`QemuError`]
+//! shape used by the QMP
 //! transport in [`crate::backends::qemu::libvirt`].  The libvirt-
 //! backed transport lives in `backends/qemu/libvirt.rs`; the
 //! per-VM state that used to live in this module now belongs to
