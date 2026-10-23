@@ -203,7 +203,7 @@ impl Instance {
     }
 
     /// Refresh one VM and mark its client broken on failure.
-    #[tracing::instrument(skip(self), fields(id = %self.id))]
+    #[tracing::instrument(level = "trace", skip(self), fields(id = %self.id))]
     pub async fn refresh_state(&self, refresh_cgroup: bool) -> bool {
         match self.client.get_thread_pool_snapshot().await {
             Ok(snapshot) => {
@@ -213,6 +213,7 @@ impl Instance {
             Err(error) => {
                 tracing::warn!(
                     target: "controller",
+                    vm = %self.id,
                     %error,
                     "refresh failed; removing instance"
                 );
@@ -235,6 +236,7 @@ impl Instance {
                 Err(error) => {
                     tracing::warn!(
                         target: "controller",
+                        vm = %self.id,
                         %error,
                         "failed to sample backend task CPU"
                     );
@@ -640,7 +642,7 @@ fn compute_per_worker_util(
 }
 
 /// Read cumulative CPU time across matching `/proc/<pid>/task/*/stat` files.
-#[tracing::instrument(skip(filter), fields(pid))]
+#[tracing::instrument(level = "debug", skip(filter))]
 fn read_cpu_sample(
     pid: i32,
     filter: &crate::instance::ThreadNameFilter,
@@ -656,6 +658,7 @@ fn read_cpu_sample(
             Err(error) => {
                 tracing::warn!(
                     target: "controller",
+                    pid,
                     %error,
                     "failed to enumerate backend task"
                 );
@@ -667,6 +670,7 @@ fn read_cpu_sample(
             Err(error) => {
                 tracing::warn!(
                     target: "controller",
+                    pid,
                     %error,
                     "failed to read backend task stat"
                 );
