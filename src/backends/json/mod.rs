@@ -5,18 +5,11 @@
 
 //! File-backed backend for component tests.
 //!
-//! This backend manages state through JSON files in `state_dir`, allowing the
-//! external Python component testing harness to manipulate "VM"s as necessary.
-//! All VM specific state is tracked in the corresponding file, which are read
-//! from and written to as necessary by both this backend and the harness. The
-//! controller actuation history is preserved in `calls.json`, which the harness
-//! can use in assertions.
-//!
-//! In general, the harness would set up performance counters for a scenario
-//! and then run the controller over the VMs. As performance metrics are
-//! currently reported by the backend, these counters are directly included
-//! in the VM file. The harness can also manipulate the files while the
-//! controller is running, for example to simulate a gain in IOPS.
+//! Instead of requiring a running QEMU instance, this backend manages
+//! state through JSON files in `state_dir`. This allows for the external
+//! Python component testing harness to manipulate "VM"s as necessary.
+//! Similarly, controller actuations are preserved in `calls.json`, which
+//! the harness can use in assertions.
 //!
 //! VM JSON files consist of the following which are used to construct a
 //! [`ThreadPoolSnapshot`]:
@@ -38,7 +31,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Error as IoError, Read, Seek, SeekFrom, Write},
+    io::{Error as IoError, Write},
     sync::Arc,
 };
 
@@ -54,6 +47,16 @@ use crate::{
 
 const BACKEND_NAME: &str = "json";
 
+fn build_json_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
+    Ok(Box::new(JsonBackend::from_config_dir(dir)?))
+}
+
+#[linkme::distributed_slice(crate::backends::BACKENDS)]
+static JSON_BACKEND: BackendRegistration = BackendRegistration {
+    name: BACKEND_NAME,
+    build: build_json_backend,
+};
+
 /// `<backend_config_dir>/json.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +68,7 @@ struct JsonBackendConfig {
 }
 
 impl JsonBackendConfig {
-    /// Read `json.json` when it exists.
+    /// Read `json.json` when it exists. An absent file discovers nothing.
     fn from_dir(dir: &Path) -> Result<Option<Self>, ConfigError> {
         let path = dir.join("json.json");
         if !path.exists() {
@@ -79,188 +82,33 @@ impl JsonBackendConfig {
 
 /// One component-test VM, as stored on disk.
 ///
-/// Missing fields take [`VmStatus::default`]: one thread, one vCPU, and
+/// Missing fields take [`VmFile::default`]: one thread, one vCPU, and
 /// `managed` so the controller may scale the VM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-struct VmStatus {
+struct VmFile {
     thread_count: u32,
     vcpu_count: u32,
-    per_thread_util: f64,
+    /// First-snapshot ownership. `true` lets the controller scale the VM.
+    managed: bool,
     fail_snapshot: bool,
     read_io_count: u64,
     write_io_count: u64,
     other_io_count: u64,
 }
 
-impl Default for VmStatus {
+impl Default for VmFile {
     fn default() -> Self {
         Self {
             thread_count: 1,
             vcpu_count: 1,
-            per_thread_util: 0.0,
+            managed: true,
             fail_snapshot: false,
             read_io_count: 0,
             write_io_count: 0,
             other_io_count: 0,
         }
     }
-}
-
-impl VmStatus {
-    fn from_file(file: &File) -> Result<Self, BackendClientError> {
-        let mut file = file.try_clone()?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut data = String::new();
-        file.read_to_string(&mut data)?;
-        Ok(serde_json::from_str(&data)?)
-    }
-
-    fn write_to(&self, file: &File) -> Result<(), BackendClientError> {
-        let mut file = file.try_clone()?;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        let data = serde_json::to_vec_pretty(self)?;
-        file.write_all(&data)?;
-        file.sync_all()?;
-        Ok(())
-    }
-}
-
-/// Exclusive `flock` held until dropped. Matches `fcntl.flock(LOCK_EX)`.
-struct LockGuard {
-    file: File,
-}
-
-impl LockGuard {
-    /// Acquire the lock for the given VM file. Blocks until it gets the lock.
-    fn acquire(vm_path: &std::path::Path) -> Result<Self, IoError> {
-        if let Some(parent) = vm_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new()
-            .create(false)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(vm_path)?;
-        file.lock()?;
-        Ok(Self { file })
-    }
-
-    /// Read the locked VM file.
-    fn read(&self) -> Result<VmStatus, BackendClientError> {
-        VmStatus::from_file(&self.file)
-    }
-
-    /// Write the locked VM file.
-    fn write(&self, status: &VmStatus) -> Result<(), BackendClientError> {
-        status.write_to(&self.file)
-    }
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
-}
-
-/// Handle to a VM JSON file on disk. Contains the path and provides
-/// locked access to the [`VmStatus`] contents.
-#[derive(Debug, Clone)]
-struct VmFile {
-    path: std::path::PathBuf,
-}
-
-impl VmFile {
-    fn new(path: std::path::PathBuf) -> Self {
-        Self { path }
-    }
-
-    /// Lock the VM file for exclusive access.
-    fn lock(&self) -> Result<LockGuard, IoError> {
-        LockGuard::acquire(&self.path)
-    }
-}
-
-/// Per-VM client. Paths are real filesystem paths, not `crate::path::Path`s.
-struct JsonClient {
-    vm: VmFile,
-    calls_path: std::path::PathBuf,
-}
-
-#[async_trait]
-impl InstanceClient for JsonClient {
-    async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
-        let guard = self.vm.lock()?;
-        let mut vm = guard.read()?;
-        vm.thread_count = count;
-        guard.write(&vm)?;
-        let mut calls = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.calls_path)?;
-        let line = serde_json::json!({
-            "vm": self.vm.path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(""),
-            "threads": count,
-        });
-        writeln!(calls, "{line}")?;
-        Ok(())
-    }
-
-    async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
-        let guard = self.vm.lock()?;
-        let vm = guard.read()?;
-        if vm.fail_snapshot {
-            return Err(BackendClientError::InvalidState(format!(
-                "json snapshot failed for {}",
-                self.vm.path.display()
-            )));
-        }
-        Ok(ThreadPoolSnapshot {
-            thread_count: vm.thread_count,
-            vcpu_count: vm.vcpu_count,
-            perf: Some(InstancePerfSample {
-                read_io_count: vm.read_io_count,
-                write_io_count: vm.write_io_count,
-                other_io_count: vm.other_io_count,
-                read_bytes_total: 0,
-                write_bytes_total: 0,
-                ..Default::default()
-            }),
-            per_thread_util: Some(vm.per_thread_util),
-        })
-    }
-
-    fn initial_pool_is_managed(&self, _thread_count: u32, _vcpu_count: u32) -> bool {
-        true
-    }
-
-    async fn close(&self) {}
-}
-
-/// Load every `<vm-id>.json` file in `state_dir`.
-#[tracing::instrument(skip(state_dir), fields(directory = %state_dir))]
-fn discover_vms(state_dir: &Path, calls_path: &Path) -> Vec<Arc<Instance>> {
-    let entries = fs::read_dir(state_dir).expect("json backend state directory is not readable");
-    let mut instances = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        let client = JsonClient {
-            vm: VmFile::new(path.clone()),
-            calls_path: calls_path.to_path_buf(),
-        };
-        instances.push(Arc::new(Instance::new(
-            id.to_string(),
-            Path::new(id),
-            0,
-            client,
-        )));
-    }
-    instances
 }
 
 /// Fleet adapter that discovers JSON VM files.
@@ -298,12 +146,150 @@ impl Backend for JsonBackend {
     }
 }
 
-fn build_json_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
-    Ok(Box::new(JsonBackend::from_config_dir(dir)?))
+/// Load every `<vm-id>.json` file in `state_dir`.
+#[tracing::instrument(skip(state_dir), fields(directory = %state_dir))]
+fn discover_vms(state_dir: &Path, calls_path: &Path) -> Vec<Arc<Instance>> {
+    let entries = fs::read_dir(state_dir).expect("json backend state directory is not readable");
+    let mut instances = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let Some(vm) = read_vm(&path, id) else {
+            continue;
+        };
+        let pid = fake_pid(id);
+        let client = JsonClient {
+            vm_path: path.clone(),
+            calls_path: calls_path.to_path_buf(),
+            managed: vm.managed,
+        };
+        instances.push(Arc::new(Instance::new(
+            id.to_string(),
+            Path::new(id),
+            pid,
+            client,
+        )));
+    }
+    instances
 }
 
-#[linkme::distributed_slice(crate::backends::BACKENDS)]
-static JSON_BACKEND: BackendRegistration = BackendRegistration {
-    name: BACKEND_NAME,
-    build: build_json_backend,
-};
+/// Read one VM file, or log and return `None` when it cannot be parsed.
+#[tracing::instrument(skip(path, id), fields(vm = id))]
+fn read_vm(path: &std::path::Path, id: &str) -> Option<VmFile> {
+    let _guard = LockGuard::acquire(&lock_path_for(path)).ok()?;
+    VmFile::read(path).ok()
+}
+
+/// Per-VM client. Paths are real filesystem paths, not logical `path::Path`s.
+struct JsonClient {
+    vm_path: std::path::PathBuf,
+    calls_path: std::path::PathBuf,
+    managed: bool,
+}
+
+fn fake_pid(id: &str) -> i32 {
+    let hash = id.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    10_000 + (hash % 1_000_000) as i32
+}
+
+/// `<vm-id>.json` shares `<vm-id>.lock` with the pytest harness.
+fn lock_path_for(vm_path: &std::path::Path) -> std::path::PathBuf {
+    vm_path.with_extension("lock")
+}
+
+/// Exclusive `flock` held until dropped. Matches `fcntl.flock(LOCK_EX)`.
+struct LockGuard {
+    file: File,
+}
+
+impl LockGuard {
+    /// Get the lock on the given file. Blocks until it gets the lock.
+    fn acquire(path: &std::path::Path) -> Result<Self, IoError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+impl VmFile {
+    fn read(path: &std::path::Path) -> Result<Self, BackendClientError> {
+        let data = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    fn write_atomic(path: &std::path::Path, vm: &Self) -> Result<(), BackendClientError> {
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(vm)?)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl InstanceClient for JsonClient {
+    async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
+        let _guard = LockGuard::acquire(&lock_path_for(&self.vm_path))?;
+        let mut vm = VmFile::read(&self.vm_path)?;
+        vm.thread_count = count;
+        VmFile::write_atomic(&self.vm_path, &vm)?;
+        let mut calls = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.calls_path)?;
+        let line = serde_json::json!({
+            "vm": self.vm_path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(""),
+            "threads": count,
+        });
+        writeln!(calls, "{line}")?;
+        Ok(())
+    }
+
+    async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
+        let _guard = LockGuard::acquire(&lock_path_for(&self.vm_path))?;
+        let vm = VmFile::read(&self.vm_path)?;
+        if vm.fail_snapshot {
+            return Err(BackendClientError::InvalidState(format!(
+                "json snapshot failed for {}",
+                self.vm_path.display()
+            )));
+        }
+        Ok(ThreadPoolSnapshot {
+            vcpu_count: vm.vcpu_count,
+            perf: Some(InstancePerfSample {
+                read_io_count: vm.read_io_count,
+                write_io_count: vm.write_io_count,
+                other_io_count: vm.other_io_count,
+                read_bytes_total: 0,
+                write_bytes_total: 0,
+                ..Default::default()
+            }),
+        })
+    }
+
+    fn initial_pool_is_managed(&self, _thread_count: u32, _vcpu_count: u32) -> bool {
+        self.managed
+    }
+
+    async fn close(&self) {}
+}

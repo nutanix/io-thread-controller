@@ -8,11 +8,13 @@ import signal
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any
 
 import dbus
 import dbus.bus
 
 from harness.common import wait_for
+from harness.dbus import DBusServer
 
 MOCKFS_BUS_NAME = "com.nutanix.mockfs1"
 MOCKFS_OBJECT_PATH = "/com/nutanix/mockfs1"
@@ -26,18 +28,19 @@ class MockProc:
     ``Mount`` exposes the FUSE tree; ``RegisterSequence`` feeds ``/stat``.
     """
 
-    def __init__(self, root: Path, binary: Path, dbus_server: dbus.Bus) -> None:
+    def __init__(self, root: Path, binary: Path, dbus_server: DBusServer) -> None:
         """Create a new mock `/proc` controlled over DBus."""
         self.mount = root / "proc"
         self.mount.mkdir(parents=True, exist_ok=True)
-        self._proc = None
-        self._bus = None
-        self._iface = None
+        self._proc: subprocess.Popen[str] | None = None
+        self._bus: dbus.bus.BusConnection | None = None
+        self._iface: Any | None = None
         self._lock = threading.Lock()
         self._stderr_path = root / "mockfsd.stderr"
         self._stderr = open(self._stderr_path, "w")  # noqa: SIM115
         try:
             env = os.environ.copy()
+            assert dbus_server.address is not None
             env["DBUS_SYSTEM_BUS_ADDRESS"] = dbus_server.address
             self._proc = subprocess.Popen(
                 [str(binary)],
@@ -86,7 +89,7 @@ class MockProc:
 
     def register_sequence(
         self,
-        path: Path,
+        path: str | Path,
         values: list[bytes],
     ) -> None:
         """Register successive file bodies for ``path`` on this mount."""
@@ -99,7 +102,14 @@ class MockProc:
         with self._lock:
             self._iface.RegisterSequence(str(self.mount), str(path), payload)
 
-    def unregister(self, path: Path) -> None:
+    def register_static(self, path: str | Path, value: bytes) -> None:
+        """Register a static file body for ``path`` on this mount."""
+        assert self._iface is not None
+
+        with self._lock:
+            self._iface.RegisterStatic(str(self.mount), str(path), list(value))
+
+    def unregister(self, path: str | Path) -> None:
         """Remove ``path`` and any descendants from this mount."""
         assert self._iface is not None
 
