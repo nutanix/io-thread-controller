@@ -24,9 +24,10 @@ use crate::{
     config::Config,
     dbus::DbusRequest,
     engines::{
-        AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
+        AppliedOutcome, BlockedReason, EngineInstanceSnapshot, EngineTickContext, PsiSample,
+        ScaleAction, ScalingEngine,
     },
-    instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
+    instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency, ThreadPoolSnapshot},
     rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
     util::Path,
@@ -102,8 +103,10 @@ pub struct SnapshotVm {
 }
 
 /// Average, median, and aggregate utilisation across sampled workers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 struct CpuStats {
+    /// Mean per-worker utilisation as a 0..1 fraction.
+    avg_util: f64,
     /// Mean per-worker utilisation in percent.
     avg_pct: u64,
     /// Median per-worker utilisation in percent.
@@ -112,22 +115,20 @@ struct CpuStats {
     total_pct: u64,
 }
 
-/// Summarise per-worker utilisation, falling back to aggregate samples.
-fn compute_cpu_stats(s: &crate::instance::InstanceStatus) -> CpuStats {
-    if !s.per_worker_util.is_empty() {
-        let total = s.per_worker_util.iter().sum::<f64>();
-        let median = median(&s.per_worker_util);
-        return CpuStats {
-            avg_pct: (total / s.per_worker_util.len() as f64 * 100.0).round() as u64,
-            median_pct: (median * 100.0).round() as u64,
-            total_pct: (total * 100.0).round() as u64,
-        };
+/// Summarise controller-sampled worker utilisation.
+fn compute_cpu_stats(status: &InstanceStatus) -> CpuStats {
+    if status.per_worker_util.is_empty() {
+        return CpuStats::default();
     }
 
+    let total = status.per_worker_util.iter().sum::<f64>();
+    let median = median(&status.per_worker_util);
+    let avg_util = total / status.per_worker_util.len() as f64;
     CpuStats {
-        avg_pct: (s.per_thread_util * 100.0).round() as u64,
-        median_pct: (s.per_thread_util * 100.0).round() as u64,
-        total_pct: (s.per_thread_util * s.thread_count as f64 * 100.0).round() as u64,
+        avg_util,
+        avg_pct: (avg_util * 100.0).round() as u64,
+        median_pct: (median * 100.0).round() as u64,
+        total_pct: (total * 100.0).round() as u64,
     }
 }
 
@@ -264,10 +265,8 @@ impl Controller {
                 continue;
             }
             let classification = self.vm_ownership.classification(&instance.id);
-            let mut status = instance.status.write().await;
-            status.ownership_classification = classification;
-            drop(status);
-            self.engine.on_instance_added(&instance).await;
+            instance.status.write().await.ownership_classification = classification;
+            self.engine.on_instance_added(&instance.id).await;
             self.instances.insert(instance.id.clone(), instance);
             added += 1;
         }
@@ -335,8 +334,15 @@ impl Controller {
             DbusRequest::GetStats { reply } => {
                 let mut vms = Vec::with_capacity(self.instances.len());
                 for (id, instance) in &self.instances {
+                    let snapshot = instance.snapshot.read().await;
                     let status = instance.status.read().await;
-                    let (read_io_count, write_io_count, other_io_count) = match &status.perf {
+                    let cpu = compute_cpu_stats(&status);
+                    let thread_count = status.thread_count;
+                    let vcpu_count = snapshot.as_ref().map_or(0, |snapshot| snapshot.vcpu_count);
+                    let (read_io_count, write_io_count, other_io_count) = match snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.perf.as_ref())
+                    {
                         Some(perf) => {
                             (perf.read_io_count, perf.write_io_count, perf.other_io_count)
                         }
@@ -344,11 +350,11 @@ impl Controller {
                     };
                     vms.push(serde_json::json!({
                         "vm": id,
-                        "thread_count": status.thread_count,
+                        "thread_count": thread_count,
                         "manual_scaling_sticky": status.manual_scaling_sticky,
                         "scaling_allowed": status.scaling_allowed,
-                        "vcpu_count": status.vcpu_count,
-                        "per_thread_util": status.per_thread_util,
+                        "vcpu_count": vcpu_count,
+                        "per_thread_util": cpu.avg_util,
                         // FIXME omit if status.perf.is_none()?
                         "read_io_count": read_io_count,
                         "write_io_count": write_io_count,
@@ -429,7 +435,12 @@ impl Controller {
             .get(vm)
             .cloned()
             .ok_or_else(|| ControllerError::VmError("unknown VM {vm}".to_string()))?;
-        let vcpu_count = instance.status.read().await.vcpu_count;
+        let vcpu_count = instance
+            .snapshot
+            .read()
+            .await
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.vcpu_count);
         if threads == 0 {
             return Err(ControllerError::ThreadCountError(
                 "target thread count must be greater than zero".to_string(),
@@ -442,9 +453,7 @@ impl Controller {
         }
 
         instance.client.set_thread_count(threads).await?;
-        let mut status = instance.status.write().await;
-        status.thread_count = threads;
-        status.manual_scaling_sticky = sticky;
+        instance.status.write().await.manual_scaling_sticky = sticky;
         Ok(())
     }
 
@@ -486,43 +495,33 @@ impl Controller {
         let ids: Vec<_> = self.instances.keys().collect();
         for id in ids {
             let instance = &self.instances[id];
-            let s = instance.status.read().await;
-            let cpu_stats = compute_cpu_stats(&s);
-            let (num_queues, qd_total, qd_avg_x100, qd_median) =
-                summarize_vq_depths(s.per_vq_depth.as_deref());
+            let snapshot = instance.snapshot.read().await;
+            let status = instance.status.read().await;
+            let cpu_stats = compute_cpu_stats(&status);
+            let thread_count = status.thread_count;
+            let (vcpu_count, perf) = snapshot.as_ref().map_or((0, None), |snapshot| {
+                (snapshot.vcpu_count, snapshot.perf.as_ref())
+            });
+            let per_vq_depth = perf.and_then(|perf| perf.per_vq_depth.as_deref());
+            let (num_queues, qd_total, qd_avg_x100, qd_median) = summarize_vq_depths(per_vq_depth);
             payload.vms.push(SnapshotVm {
                 id: id.clone(),
-                vcpu_count: s.vcpu_count,
+                vcpu_count,
                 pid: instance.pid,
-                thread_count: s.thread_count,
-                alive: s.alive,
-                perf_available: s.perf.is_some(),
-                // Guard JSON serialization: NaN/inf are not valid JSON numbers.
-                per_thread_util: if s.per_thread_util.is_finite() {
-                    s.per_thread_util
-                } else {
-                    0.0
-                },
-                manual_scaling_sticky: s.manual_scaling_sticky,
-                read_iops: s.read_iops,
-                write_iops: s.write_iops,
-                other_iops: s.other_iops,
-                read_bw_bps: s.read_bytes_per_second,
-                write_bw_bps: s.write_bytes_per_second,
-                read_latency_us: s.read_latency_us.map(|latency| SnapshotLatency {
-                    p50: latency.p50,
-                    p95: latency.p95,
-                    p99: latency.p99,
-                    avg: latency.avg,
-                }),
-                write_latency_us: s.write_latency_us.map(|latency| SnapshotLatency {
-                    p50: latency.p50,
-                    p95: latency.p95,
-                    p99: latency.p99,
-                    avg: latency.avg,
-                }),
+                thread_count,
+                alive: status.alive,
+                perf_available: perf.is_some(),
+                per_thread_util: cpu_stats.avg_util,
+                manual_scaling_sticky: status.manual_scaling_sticky,
+                read_iops: status.read_iops,
+                write_iops: status.write_iops,
+                other_iops: status.other_iops,
+                read_bw_bps: status.read_bytes_per_second,
+                write_bw_bps: status.write_bytes_per_second,
+                read_latency_us: perf.and_then(|perf| perf.read_latency_us),
+                write_latency_us: perf.and_then(|perf| perf.write_latency_us),
                 num_queues,
-                per_vq_depth: s.per_vq_depth.clone(),
+                per_vq_depth: per_vq_depth.map(<[u64]>::to_vec),
                 qd_total,
                 qd_avg_x100,
                 qd_median,
@@ -532,6 +531,34 @@ impl Controller {
             });
         }
         serde_json::to_string(&payload).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    /// Convert one coherent raw snapshot/status pair into engine policy input.
+    async fn engine_snapshot(instance: &Instance) -> EngineInstanceSnapshot {
+        let snapshot = instance.snapshot.read().await;
+        let status = instance.status.read().await;
+        let cpu = compute_cpu_stats(&status);
+        let thread_count = status.thread_count;
+        let (vcpu_count, io_count_total) = snapshot.as_ref().map_or((0, 0), |snapshot| {
+            (
+                snapshot.vcpu_count,
+                snapshot
+                    .perf
+                    .as_ref()
+                    .map_or(0, |perf| perf.total_io_count()),
+            )
+        });
+        EngineInstanceSnapshot {
+            id: instance.id.clone(),
+            thread_count,
+            vcpu_count,
+            per_thread_util: cpu.avg_util,
+            cpu_available: !status.per_worker_util.is_empty(),
+            io_count_total,
+            throttled_recently: status.throttled_usec_delta > 0,
+            scaling_allowed: status.scaling_allowed,
+            manual_scaling_sticky: status.manual_scaling_sticky,
+        }
     }
 
     /// Refresh the fleet, evaluate one coherent plan, and apply eligible work.
@@ -578,7 +605,12 @@ impl Controller {
 
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         self.persist_new_classifications(&fleet).await?;
-        let decisions = self.engine.evaluate_fleet(&fleet, &context).await;
+        let engine_snapshots =
+            join_all(fleet.iter().map(|instance| Self::engine_snapshot(instance))).await;
+        let decisions = self
+            .engine
+            .evaluate_fleet(&engine_snapshots, &context)
+            .await;
         let mut planned_ids = HashSet::new();
         let mut plan = Vec::new();
         for (sequence, item) in decisions.into_iter().enumerate() {
@@ -602,8 +634,7 @@ impl Controller {
             let Some(target) = action.target() else {
                 continue;
             };
-            let status = instance.status.read().await;
-            let current = status.thread_count;
+            let current = instance.status.read().await.thread_count;
             if target == current {
                 continue;
             }
@@ -671,17 +702,19 @@ impl Controller {
             return Ok(false);
         };
 
+        let snapshot = instance.snapshot.read().await;
         let status = instance.status.read().await;
         let previous_count = status.thread_count;
-        let previous_io_count = match &status.perf {
-            Some(perf) => perf.total_io_count(),
-            None => 0,
-        };
+        let previous_io_count = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.perf.as_ref())
+            .map_or(0, |perf| perf.total_io_count());
         let sticky = status.manual_scaling_sticky;
         let scaling_allowed = status.scaling_allowed();
-        let vcpu_count = status.vcpu_count;
+        let vcpu_count = snapshot.as_ref().map_or(0, |snapshot| snapshot.vcpu_count);
         let cooldown_until = status.cooldown_until;
         drop(status);
+        drop(snapshot);
 
         if sticky {
             self.report_blocked_scale(&instance.id, action, BlockedReason::ManualOverride)
@@ -854,7 +887,6 @@ impl Controller {
             Ok(()) => {
                 let applied_at = Instant::now();
                 let mut status = instance.status.write().await;
-                status.thread_count = target;
                 if matches!(
                     action,
                     ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
@@ -937,6 +969,7 @@ impl Controller {
         let mut fleet: Vec<_> = self.instances.values().collect();
         fleet.sort_unstable_by(|left, right| left.id.cmp(&right.id));
         for instance in fleet {
+            let snapshot = instance.snapshot.read().await;
             let status = instance.status.read().await;
             let iops_windows = STATUS_WINDOWS.map(|window| status.rolling.iops_over(window));
             for (index, value) in iops_windows.iter().enumerate() {
@@ -946,12 +979,12 @@ impl Controller {
                 }
             }
             if self.cfg.enable_per_vm_status_line && self.cfg.enable_per_vm_main_log {
-                Self::emit_instance_status_main(instance, &status, iops_windows);
+                Self::emit_instance_status_main(instance, &status, iops_windows, snapshot.as_ref());
             } else if self.cfg.enable_per_vm_status_line {
-                self.emit_instance_status_file(instance, &status, iops_windows);
+                self.emit_instance_status_file(instance, &status, iops_windows, snapshot.as_ref());
             }
             if self.cfg.enable_per_vm_main_log {
-                Self::emit_instance_status_main(instance, &status, iops_windows);
+                Self::emit_instance_status_main(instance, &status, iops_windows, snapshot.as_ref());
             }
             total_threads += u64::from(status.thread_count);
         }
@@ -972,8 +1005,10 @@ impl Controller {
     fn format_instance_status_line(
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
+        snapshot: Option<&ThreadPoolSnapshot>,
     ) -> String {
         let cpu = compute_cpu_stats(status);
+        let perf = snapshot.and_then(|snapshot| snapshot.perf.as_ref());
         format!(
             "status={} {}/{}/{} {} {}/{} {}/{}/{} {} {} {}",
             status.thread_count,
@@ -986,8 +1021,8 @@ impl Controller {
             cpu.avg_pct,
             cpu.median_pct,
             cpu.total_pct,
-            format_latency_cell(status.read_latency_us),
-            format_latency_cell(status.write_latency_us),
+            format_latency_cell(perf.and_then(|perf| perf.read_latency_us)),
+            format_latency_cell(perf.and_then(|perf| perf.write_latency_us)),
             format_1_5_15(&status.rolling, |rolling, window| rolling
                 .cpu_us_per_io_over(window)),
         )
@@ -998,10 +1033,11 @@ impl Controller {
         instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
+        snapshot: Option<&ThreadPoolSnapshot>,
     ) {
         self.log_per_vm_line(
             &instance.id,
-            &Self::format_instance_status_line(status, iops_windows),
+            &Self::format_instance_status_line(status, iops_windows, snapshot),
         );
     }
 
@@ -1010,20 +1046,23 @@ impl Controller {
         instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
+        snapshot: Option<&ThreadPoolSnapshot>,
     ) {
+        let thread_count = status.thread_count;
+        let perf = snapshot.and_then(|snapshot| snapshot.perf.as_ref());
         tracing::info!(
             target: "controller",
             event = "vm_status",
             vm = instance.to_string(),
-            thread_count = status.thread_count,
+            thread_count,
             read_iops = status.read_iops,
             write_iops = status.write_iops,
             other_iops = status.other_iops,
             iops_1_5_15m = %format_optional_cells(iops_windows),
             read_bw_mb_s = status.read_bytes_per_second / 1_000_000,
             write_bw_mb_s = status.write_bytes_per_second / 1_000_000,
-            read_latency_us = %format_latency_cell(status.read_latency_us),
-            write_latency_us = %format_latency_cell(status.write_latency_us)
+            read_latency_us = %format_latency_cell(perf.and_then(|perf| perf.read_latency_us)),
+            write_latency_us = %format_latency_cell(perf.and_then(|perf| perf.write_latency_us))
         );
     }
 
@@ -1206,6 +1245,28 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
 
+    #[test]
+    fn cpu_stats_summarize_procfs_workers() {
+        let status = InstanceStatus {
+            per_worker_util: vec![0.25, 0.75],
+            ..Default::default()
+        };
+        let stats = compute_cpu_stats(&status);
+        assert_eq!(stats.avg_util, 0.5);
+        assert_eq!(stats.avg_pct, 50);
+        assert_eq!(stats.median_pct, 50);
+        assert_eq!(stats.total_pct, 100);
+    }
+
+    #[test]
+    fn cpu_stats_are_zero_before_a_complete_procfs_interval() {
+        let stats = compute_cpu_stats(&InstanceStatus::default());
+        assert_eq!(stats.avg_util, 0.0);
+        assert_eq!(stats.avg_pct, 0);
+        assert_eq!(stats.median_pct, 0);
+        assert_eq!(stats.total_pct, 0);
+    }
+
     struct VcpuLimitedClient {
         target: Arc<AtomicU32>,
     }
@@ -1219,14 +1280,27 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
                 vcpu_count: 4,
                 perf: None,
-                per_thread_util: None,
             })
         }
 
         async fn close(&self) {}
+    }
+
+    async fn set_test_state(
+        instance: &Instance,
+        thread_count: u32,
+        vcpu_count: u32,
+        ownership_classification: Option<bool>,
+    ) {
+        *instance.snapshot.write().await = Some(ThreadPoolSnapshot {
+            vcpu_count,
+            perf: None,
+        });
+        let mut status = instance.status.write().await;
+        status.thread_count = thread_count;
+        status.ownership_classification = ownership_classification;
     }
 
     /// Test that actuation will not raise the pool above the VM vCPU
@@ -1249,12 +1323,7 @@ mod tests {
             0,
             client,
         ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 2;
-            status.vcpu_count = 4;
-            status.ownership_classification = Some(true);
-        }
+        set_test_state(&instance, 2, 4, Some(true)).await;
         let mut controller = Controller::new(
             cfg,
             Box::new(ThresholdEngine::new(ThresholdConfig::default())),
@@ -1322,11 +1391,7 @@ mod tests {
             0,
             client,
         ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 2;
-            status.vcpu_count = 4;
-        }
+        set_test_state(&instance, 2, 4, None).await;
         let mut controller = Controller::new(
             cfg,
             Box::new(ThresholdEngine::new(ThresholdConfig::default())),
@@ -1398,12 +1463,7 @@ mod tests {
             0,
             client,
         ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 4;
-            status.vcpu_count = 8;
-            status.ownership_classification = Some(true);
-        }
+        set_test_state(&instance, 4, 8, Some(true)).await;
         let mut controller = Controller::new(
             cfg,
             Box::new(ThresholdEngine::new(ThresholdConfig::default())),
@@ -1460,12 +1520,7 @@ mod tests {
             0,
             client,
         ));
-        {
-            let mut status = instance.status.write().await;
-            status.thread_count = 3;
-            status.vcpu_count = 8;
-            status.ownership_classification = Some(true);
-        }
+        set_test_state(&instance, 3, 8, Some(true)).await;
         let mut controller = Controller::new(
             cfg,
             Box::new(ThresholdEngine::new(ThresholdConfig::default())),
@@ -1511,10 +1566,8 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
                 vcpu_count: 16,
                 perf: None,
-                per_thread_util: Some(0.0),
             })
         }
 
@@ -1546,8 +1599,8 @@ mod tests {
         };
         let good_instance = Arc::new(Instance::new("visible".to_string(), Path::new(""), 0, good));
         let bad_instance = Arc::new(Instance::new("hidden".to_string(), Path::new(""), 0, bad));
-        good_instance.status.write().await.vcpu_count = 16;
-        bad_instance.status.write().await.vcpu_count = 16;
+        set_test_state(&good_instance, 1, 16, None).await;
+        set_test_state(&bad_instance, 1, 16, None).await;
         controller
             .instances
             .insert("visible".to_string(), good_instance.clone());
@@ -1567,7 +1620,6 @@ mod tests {
     }
 
     struct SnapshotClient {
-        threads: u32,
         closed: Arc<AtomicUsize>,
     }
 
@@ -1579,11 +1631,9 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.threads,
                 // FIXME these weren't required, looked like broken due to rebase
                 vcpu_count: 2,
                 perf: None,
-                per_thread_util: None,
             })
         }
 
@@ -1625,14 +1675,14 @@ mod tests {
 
         async fn evaluate(
             &self,
-            _instance: &Arc<Instance>,
+            _instance: &EngineInstanceSnapshot,
             _context: &EngineTickContext,
         ) -> ScaleAction {
             self.evaluated.fetch_add(1, Ordering::Relaxed);
             ScaleAction::None
         }
 
-        async fn on_instance_added(&self, _instance: &Arc<Instance>) {
+        async fn on_instance_added(&self, _instance_id: &str) {
             self.added.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -1641,12 +1691,12 @@ mod tests {
         }
     }
 
-    fn instance(id: &str, threads: u32, closed: Arc<AtomicUsize>) -> Arc<Instance> {
+    fn instance(id: &str, closed: Arc<AtomicUsize>) -> Arc<Instance> {
         Arc::new(Instance::new(
             id.to_string(),
             Path::new(""),
             1,
-            SnapshotClient { threads, closed },
+            SnapshotClient { closed },
         ))
     }
 
@@ -1675,7 +1725,7 @@ mod tests {
         .unwrap();
         let closed = Arc::new(AtomicUsize::new(0));
 
-        let first = instance("vm-a", 1, Arc::clone(&closed));
+        let first = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller
             .sync_instances(vec![Arc::clone(&first)])
             .await
@@ -1684,7 +1734,7 @@ mod tests {
         assert_eq!(controller.instances.len(), 1);
         assert_eq!(added.load(Ordering::Relaxed), 1);
 
-        let duplicate = instance("vm-a", 9, Arc::clone(&closed));
+        let duplicate = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller.sync_instances(vec![duplicate]).await.unwrap();
         assert_eq!((n_added, n_removed), (0, 0));
         assert_eq!(controller.instances.len(), 1);
@@ -1722,7 +1772,7 @@ mod tests {
         .unwrap();
 
         let closed = Arc::new(AtomicUsize::new(0));
-        let ok = instance("ok", 4, Arc::clone(&closed));
+        let ok = instance("ok", Arc::clone(&closed));
         let bad = Arc::new(Instance::new(
             "bad".to_string(),
             Path::new(""),
@@ -1732,14 +1782,20 @@ mod tests {
         controller.sync_instances(vec![ok, bad]).await.unwrap();
         assert_eq!(added.load(Ordering::Relaxed), 2);
 
+        let task_dir = Path::proc_pid(1).join("task/10");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(
+            task_dir.join("stat"),
+            "10 (worker0) S 1 1 1 0 -1 0 0 0 0 0 5 3 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \
+             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        )
+        .unwrap();
+
         controller.tick().await.unwrap();
         assert_eq!(controller.tick_index, 1);
         assert_eq!(controller.instances.len(), 1);
         assert!(controller.instances.contains_key("ok"));
-        assert_eq!(
-            controller.instances["ok"].status.read().await.thread_count,
-            4
-        );
+        assert!(controller.instances["ok"].status.read().await.thread_count > 0);
         assert_eq!(evaluated.load(Ordering::Relaxed), 1);
         assert_eq!(removed.load(Ordering::Relaxed), 1);
     }

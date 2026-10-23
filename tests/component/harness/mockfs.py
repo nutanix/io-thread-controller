@@ -6,6 +6,7 @@
 import os
 import signal
 import subprocess
+import threading
 
 import dbus
 
@@ -29,6 +30,7 @@ class MockProc:
         self._proc = None
         self._bus = None
         self._iface = None
+        self._lock = threading.Lock()
         self._stderr_path = root / "mockfsd.stderr"
         self._stderr = open(self._stderr_path, "w")
         try:
@@ -79,7 +81,13 @@ class MockProc:
             [dbus.ByteArray(bytes(value)) for value in values],
             signature="ay",
         )
-        self._iface.RegisterSequence(str(self.mount), path, payload)
+        with self._lock:
+            self._iface.RegisterSequence(str(self.mount), path, payload)
+
+    def unregister(self, path):
+        """Remove ``path`` and any descendants from this mount."""
+        with self._lock:
+            self._iface.Unregister(str(self.mount), path)
 
     def stop(self):
         """Unmount if possible, stop mockfsd, and close its stderr log."""

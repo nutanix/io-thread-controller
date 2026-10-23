@@ -111,6 +111,42 @@ impl Inner {
         self.callbacks.insert(parent, callback);
     }
 
+    /// Attempt to unregister a file, returns true if successful.
+    fn unregister(&mut self, name: &Path) -> bool {
+        assert!(name.is_absolute());
+        let mut parent = INodeNo::ROOT;
+        let mut target = None;
+        for part in name.components() {
+            let Component::Normal(part) = part else {
+                continue;
+            };
+            let Some(inode) = self.children.get(&(parent, part.to_owned())).copied() else {
+                return false;
+            };
+            target = Some((parent, part.to_owned(), inode));
+            parent = inode;
+        }
+        let Some((target_parent, target_name, target_inode)) = target else {
+            return false;
+        };
+        let mut removed = vec![target_inode];
+        let mut index = 0;
+        while index < removed.len() {
+            let inode = removed[index];
+            removed.extend(
+                self.children
+                    .iter()
+                    .filter_map(|((parent, _), child)| (*parent == inode).then_some(*child)),
+            );
+            index += 1;
+        }
+        self.children
+            .retain(|(parent, _), child| !removed.contains(parent) && !removed.contains(child));
+        self.children.remove(&(target_parent, target_name));
+        self.callbacks.retain(|inode, _| !removed.contains(inode));
+        true
+    }
+
     /// Get child [`INodeNo`] given its name and parents [`INodeNo`].
     fn lookup(&self, parent: INodeNo, name: &OsStr) -> Option<INodeNo> {
         self.children.get(&(parent, name.to_owned())).copied()
@@ -311,6 +347,11 @@ impl MockFsHandle {
         validate_registration_path(name)?;
         self.register_iterator(name, values);
         Ok(())
+    }
+
+    fn unregister(&self, name: &Path) -> Result<bool, RegisterError> {
+        validate_registration_path(name)?;
+        Ok(self.inner.lock().expect("mockfs lock").unregister(name))
     }
 }
 
@@ -645,6 +686,12 @@ impl Control {
     ) -> zbus::fdo::Result<()> {
         self.mounted_handle(&mount_path)?
             .register_sequence_bytes(Path::new(&path), values)
+            .map_err(invalid_args)
+    }
+
+    async fn unregister(&self, mount_path: String, path: String) -> zbus::fdo::Result<bool> {
+        self.mounted_handle(&mount_path)?
+            .unregister(Path::new(&path))
             .map_err(invalid_args)
     }
 
