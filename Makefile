@@ -55,7 +55,7 @@ component-test:
 	python3 -m pytest tests/component
 
 .PHONY: test
-test: unit-test
+test: unit-test component-test
 
 .PHONY: pre-push
 pre-push: check test
