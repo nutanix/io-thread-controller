@@ -751,7 +751,7 @@ impl ScalingEngine for ThresholdEngine {
             if self.cfg.block_scale_up_when_cgroup_throttled && throttled_recently {
                 tracing::info!(
                     target: "controller",
-                    id = %instance.id,
+                    vm = %instance.id,
                     "scale-up suppressed by cgroup CPU throttling"
                 );
                 return ScaleAction::None;

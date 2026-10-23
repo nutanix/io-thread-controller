@@ -108,7 +108,7 @@ impl LibvirtConn {
                     Err(e) => {
                         tracing::debug!(
                             target: "qemu",
-                            uuid = %uuid,
+                            vm = %uuid,
                             error = ?e,
                             "libvirt: skip vm (xml fetch)"
                         );

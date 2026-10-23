@@ -7,10 +7,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{OpenOptions, create_dir_all},
-    io::Write,
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use futures_util::future::join_all;
@@ -27,8 +25,8 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
+    per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
-    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -182,7 +180,6 @@ const fn from_mins(minutes: u64) -> Duration {
 
 /// Rolling windows displayed in uptime-style status fields.
 const STATUS_WINDOWS: [Duration; 3] = [from_mins(1), from_mins(5), from_mins(15)];
-const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";
 
 /// Host-wide cumulative CPU counters from `/proc/stat`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -211,10 +208,6 @@ pub struct Controller {
     /// and decide.
     // FIXME Instance probably doesn't need to be an Arc.
     pub instances: HashMap<String, Arc<Instance>>,
-    /// Per-VM log file destination when per-VM main log is disabled.
-    per_vm_log_dir: Path,
-    /// VM IDs for which per-VM log I/O failures were already reported.
-    per_vm_log_io_error_warned: std::sync::Mutex<HashSet<String>>,
     /// Monotonically increasing tick sequence.
     pub tick_index: u64,
     /// Previous host CPU sample.
@@ -236,8 +229,6 @@ impl Controller {
             vm_state_store,
             vm_ownership,
             instances: HashMap::new(),
-            per_vm_log_dir: Path::from(PER_VM_LOG_DIR),
-            per_vm_log_io_error_warned: std::sync::Mutex::new(HashSet::new()),
             tick_index: 0,
             last_host_cpu: None,
             host_cpu_util: 0.0,
@@ -267,7 +258,7 @@ impl Controller {
             status.ownership_classification = classification;
             drop(status);
             self.engine.on_instance_added(&instance).await;
-            self.log_per_vm_line(&instance.id, "event=vm_added");
+            tracing::info!(target: per_vm_log::TARGET, vm = %instance.id, event = "vm_added");
             self.instances.insert(instance.id.clone(), instance);
             added += 1;
         }
@@ -283,7 +274,12 @@ impl Controller {
             if let Some(instance) = self.instances.remove(&id) {
                 instance.client.close().await;
                 self.engine.on_instance_removed(&id).await;
-                self.log_per_vm_line(&id, "event=vm_removed reason=not_discovered");
+                tracing::info!(
+                    target: per_vm_log::TARGET,
+                    vm = %id,
+                    event = "vm_removed",
+                    reason = "not_discovered"
+                );
             }
         }
         Ok((added, removed))
@@ -573,7 +569,12 @@ impl Controller {
         {
             self.instances.remove(&id);
             self.engine.on_instance_removed(&id).await;
-            self.log_per_vm_line(&id, "event=vm_removed reason=refresh_failed");
+            tracing::info!(
+                target: per_vm_log::TARGET,
+                vm = %id,
+                event = "vm_removed",
+                reason = "refresh_failed"
+            );
             // FIXME IIUC a failed instance gets dropped but we don't call
             // close()
         }
@@ -688,10 +689,6 @@ impl Controller {
         if sticky {
             self.report_blocked_scale(&instance.id, action, BlockedReason::ManualOverride)
                 .await;
-            self.log_per_vm_line(
-                &instance.id,
-                &format!("event=scale_blocked reason=manual_override action={action}"),
-            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -705,10 +702,6 @@ impl Controller {
             // FIXME why would an engine even consider an unmanaged VM?
             self.report_blocked_scale(&instance.id, action, BlockedReason::UnmanagedVm)
                 .await;
-            self.log_per_vm_line(
-                &instance.id,
-                &format!("event=scale_blocked reason=unmanaged_vm action={action}"),
-            );
             tracing::info!(
                 target: "controller",
                 event = "scale_blocked",
@@ -721,16 +714,12 @@ impl Controller {
         if target < self.cfg.min_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetBelowMinimum)
                 .await;
-            self.log_per_vm_line(
-                    &instance.id,
-                    &format!(
-                        "event=scale_blocked reason=target_below_minimum action={action} target={} minimum={}",
-                        target, self.cfg.min_thread_count
-                    ),
-                );
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
+                event = "scale_blocked",
+                reason = "target_below_minimum",
+                vm = %instance.id,
+                action = %action,
                 target,
                 minimum = self.cfg.min_thread_count,
                 "automatic scaling suppressed by controller minimum"
@@ -740,16 +729,12 @@ impl Controller {
         if target > self.cfg.max_thread_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsMaximum)
                 .await;
-            self.log_per_vm_line(
-                    &instance.id,
-                    &format!(
-                        "event=scale_blocked reason=target_exceeds_maximum action={action} target={} maximum={}",
-                        target, self.cfg.max_thread_count
-                    ),
-                );
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
+                event = "scale_blocked",
+                reason = "target_exceeds_maximum",
+                vm = %instance.id,
+                action = %action,
                 target,
                 maximum = self.cfg.max_thread_count,
                 "automatic scaling suppressed by controller maximum"
@@ -759,16 +744,12 @@ impl Controller {
         if target > vcpu_count {
             self.report_blocked_scale(instance_id, action, BlockedReason::TargetExceedsVcpuCount)
                 .await;
-            self.log_per_vm_line(
-                    &instance.id,
-                    &format!(
-                        "event=scale_blocked reason=target_exceeds_vcpu_count action={action} target={} vcpus={}",
-                        target, vcpu_count
-                    ),
-                );
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
+                event = "scale_blocked",
+                reason = "target_exceeds_vcpu_count",
+                vm = %instance.id,
+                action = %action,
                 target,
                 vcpus = vcpu_count,
                 "automatic scaling suppressed by vCPU cap"
@@ -780,13 +761,12 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::Cooldown)
                 .await;
-            self.log_per_vm_line(
-                &instance.id,
-                &format!("event=scale_blocked reason=cooldown action={action}"),
-            );
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
+                event = "scale_blocked",
+                reason = "cooldown",
+                vm = %instance.id,
+                action = %action,
                 "automatic scaling suppressed by cooldown"
             );
             return Ok(false);
@@ -801,16 +781,12 @@ impl Controller {
         {
             self.report_blocked_scale(instance_id, action, BlockedReason::HostCpuCeiling)
                 .await;
-            self.log_per_vm_line(
-                    &instance.id,
-                    &format!(
-                        "event=scale_blocked reason=host_cpu_ceiling action={action} host_cpu={} ceiling={}",
-                        self.host_cpu_util, self.cfg.host_cpu_scale_up_ceiling
-                    ),
-                );
             tracing::info!(
                 target: "controller",
-                id = %instance.id,
+                event = "scale_blocked",
+                reason = "host_cpu_ceiling",
+                vm = %instance.id,
+                action = %action,
                 host_cpu = self.host_cpu_util,
                 ceiling = self.cfg.host_cpu_scale_up_ceiling,
                 "automatic scaling suppressed by host CPU guard"
@@ -819,12 +795,9 @@ impl Controller {
         }
 
         if self.cfg.dry_run {
-            self.log_per_vm_line(
-                &instance.id,
-                &format!("event=scale_dry_run action={action} target={target}"),
-            );
             tracing::info!(
                 target: "controller",
+                event = "scale_dry_run",
                 vm = %instance.id,
                 action = %action,
                 target,
@@ -885,13 +858,6 @@ impl Controller {
                     prev_thread_count = previous_count,
                     prev_io_count_total = previous_io_count
                 );
-                self.log_per_vm_line(
-                        &instance.id,
-                        &format!(
-                            "event=scale_applied action={action} target={} prev_thread_count={} prev_io_count_total={}",
-                            target, previous_count, previous_io_count
-                        ),
-                    );
                 Ok(true)
             }
             Err(error) => {
@@ -906,13 +872,6 @@ impl Controller {
                     action = %action,
                     target,
                     error = %error_text
-                );
-                self.log_per_vm_line(
-                    &instance.id,
-                    &format!(
-                        "event=scale_failed action={action} target={} error={}",
-                        target, error_text
-                    ),
                 );
                 Ok(false)
             }
@@ -950,7 +909,7 @@ impl Controller {
             if self.cfg.enable_per_vm_status_line && self.cfg.enable_per_vm_main_log {
                 Self::emit_instance_status_main(instance, &status, iops_windows);
             } else if self.cfg.enable_per_vm_status_line {
-                self.emit_instance_status_file(instance, &status, iops_windows);
+                Self::emit_instance_status_file(instance, &status, iops_windows);
             }
             if self.cfg.enable_per_vm_main_log {
                 Self::emit_instance_status_main(instance, &status, iops_windows);
@@ -997,14 +956,15 @@ impl Controller {
     }
 
     fn emit_instance_status_file(
-        &self,
         instance: &Instance,
         status: &InstanceStatus,
         iops_windows: [Option<u64>; 3],
     ) {
-        self.log_per_vm_line(
-            &instance.id,
-            &Self::format_instance_status_line(status, iops_windows),
+        tracing::info!(
+            target: per_vm_log::TARGET,
+            vm = %instance.id,
+            "{}",
+            Self::format_instance_status_line(status, iops_windows)
         );
     }
 
@@ -1028,88 +988,6 @@ impl Controller {
             read_latency_us = %format_latency_cell(status.read_latency_us, "/"),
             write_latency_us = %format_latency_cell(status.write_latency_us, "/")
         );
-    }
-
-    fn should_log_per_vm_file(&self) -> bool {
-        self.cfg.enable_per_vm_status_line && !self.cfg.enable_per_vm_main_log
-    }
-
-    fn per_vm_log_path(&self, vm: &str) -> Path {
-        let name: String = vm
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        Path::new(&self.per_vm_log_dir.join(format!("{name}.log")))
-    }
-
-    fn log_per_vm_line(&self, vm: &str, line: &str) {
-        if !self.should_log_per_vm_file() {
-            return;
-        }
-        let path = self.per_vm_log_path(vm);
-        let path_text = path.display().to_string();
-        if let Some(parent) = path.parent()
-            && let Err(error) = create_dir_all(parent)
-        {
-            let mut warned = self
-                .per_vm_log_io_error_warned
-                .lock()
-                .expect("lock poisoned");
-            if warned.insert(vm.to_string()) {
-                tracing::warn!(
-                    target: "controller",
-                    vm,
-                    path = %path_text,
-                    %error,
-                    "failed to create per-VM log directory"
-                );
-            }
-            return;
-        }
-        match OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(mut file) => {
-                if let Err(error) = writeln!(
-                    file,
-                    "{} {line}",
-                    humantime::format_rfc3339_millis(SystemTime::now())
-                ) {
-                    let mut warned = self
-                        .per_vm_log_io_error_warned
-                        .lock()
-                        .expect("lock poisoned");
-                    if warned.insert(vm.to_string()) {
-                        tracing::warn!(
-                            target: "controller",
-                            vm,
-                            path = %path_text,
-                            %error,
-                            "failed to write per-VM log"
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                let mut warned = self
-                    .per_vm_log_io_error_warned
-                    .lock()
-                    .expect("lock poisoned");
-                if warned.insert(vm.to_string()) {
-                    tracing::warn!(
-                        target: "controller",
-                        vm,
-                        path = %path_text,
-                        %error,
-                        "failed to open per-VM log"
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -1202,8 +1080,10 @@ mod tests {
         backends::BackendClientError,
         engines::{EngineTickContext, ScalingEngine},
         instance::{InstanceClient, ThreadPoolSnapshot},
+        per_vm_log::PerVmLog,
         util::Path,
     };
+    use tracing_subscriber::layer::SubscriberExt;
 
     #[cfg(feature = "threshold-engine")]
     use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
@@ -1265,6 +1145,7 @@ mod tests {
         controller
             .instances
             .insert(instance.id.clone(), Arc::clone(&instance));
+        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Up(4))
@@ -1294,6 +1175,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(target.load(Ordering::Relaxed), 3);
+
+        let events = per_vm_log_events(&per_vm_log, &instance.id);
+        assert!(events[0].starts_with("event=scale_applied "), "{events:?}");
+        assert!(
+            events[1].starts_with(
+                "automatic scaling suppressed by vCPU cap event=scale_blocked \
+                 reason=target_exceeds_vcpu_count "
+            ) && events[1].ends_with(" target=5 vcpus=4"),
+            "{events:?}"
+        );
     }
 
     // FIXME This test seems like it mixes basic ScaleAction unit tests and more
@@ -1687,8 +1578,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let log_dir = tempfile::tempdir().unwrap();
-        controller.per_vm_log_dir = Path::new(log_dir.path());
+        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
         let closed = Arc::new(AtomicUsize::new(0));
 
         let first = instance("vm-a", 1, Arc::clone(&closed));
@@ -1712,19 +1602,34 @@ mod tests {
         assert_eq!(removed.load(Ordering::Relaxed), 1);
         assert_eq!(evaluated.load(Ordering::Relaxed), 0);
         assert_eq!(
-            per_vm_log_events(&controller, "vm-a"),
+            per_vm_log_events(&per_vm_log, "vm-a"),
             ["event=vm_added", "event=vm_removed reason=not_discovered"]
         );
     }
 
-    /// Return the `event=` records of one VM's per-VM log, without
-    /// timestamps.
-    fn per_vm_log_events(controller: &Controller, vm: &str) -> Vec<String> {
-        std::fs::read_to_string(controller.per_vm_log_path(vm))
+    /// Route this thread's per-VM events to files in a temporary directory.
+    fn capture_per_vm_log() -> (
+        PerVmLog,
+        tempfile::TempDir,
+        tracing::subscriber::DefaultGuard,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let per_vm_log = PerVmLog::default();
+        per_vm_log.set_dir(Some(Path::new(dir.path())));
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(per_vm_log.clone()),
+        );
+        (per_vm_log, dir, guard)
+    }
+
+    /// Return the records of one VM's per-VM log that carry an `event`
+    /// field, without timestamps.
+    fn per_vm_log_events(per_vm_log: &PerVmLog, vm: &str) -> Vec<String> {
+        std::fs::read_to_string(per_vm_log.path(vm).unwrap())
             .unwrap()
             .lines()
             .filter_map(|line| line.split_once(' ').map(|(_, record)| record))
-            .filter(|record| record.starts_with("event="))
+            .filter(|record| record.contains("event="))
             .map(str::to_string)
             .collect()
     }
@@ -1750,8 +1655,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let log_dir = tempfile::tempdir().unwrap();
-        controller.per_vm_log_dir = Path::new(log_dir.path());
+        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
 
         let closed = Arc::new(AtomicUsize::new(0));
         let ok = instance("ok", 4, Arc::clone(&closed));
@@ -1774,9 +1678,9 @@ mod tests {
         );
         assert_eq!(evaluated.load(Ordering::Relaxed), 1);
         assert_eq!(removed.load(Ordering::Relaxed), 1);
-        assert_eq!(per_vm_log_events(&controller, "ok"), ["event=vm_added"]);
+        assert_eq!(per_vm_log_events(&per_vm_log, "ok"), ["event=vm_added"]);
         assert_eq!(
-            per_vm_log_events(&controller, "bad"),
+            per_vm_log_events(&per_vm_log, "bad"),
             ["event=vm_added", "event=vm_removed reason=refresh_failed"]
         );
     }
