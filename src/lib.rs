@@ -14,4 +14,6 @@ pub mod engines;
 pub mod instance;
 pub mod rolling;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test;
 pub mod util;

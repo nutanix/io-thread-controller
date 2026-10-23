@@ -69,11 +69,26 @@ impl fmt::Display for Path {
     }
 }
 
-static IO_THREAD_CONTROLLER_ROOT_PATH: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
+static ROOT_PATH: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
     std::path::PathBuf::from(
         env::var("IO_THREAD_CONTROLLER_ROOT_PATH").unwrap_or(String::from("/")),
     )
 });
+
+/// Returns the path new `util::Path`s will have prefixed. In non-test
+/// configurations, this will be either `/` or the contents of the
+/// `IO_THREAD_CONTROLLER_ROOT_PATH` env var.
+///
+/// In test configurations, this may differ per thread to support concurrently
+/// running unit tests.
+pub(crate) fn effective_root() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(root) = crate::test::mockdir::ROOT_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return root;
+    }
+
+    ROOT_PATH.clone()
+}
 
 impl Path {
     pub fn new<S>(s: &S) -> Self
@@ -82,7 +97,7 @@ impl Path {
     {
         let mut pb = std::path::PathBuf::from(s);
         if pb.is_absolute() {
-            pb = IO_THREAD_CONTROLLER_ROOT_PATH.join(pb.strip_prefix("/").expect("absolute path"))
+            pb = effective_root().join(pb.strip_prefix("/").expect("absolute path"))
         }
         Self { path: pb }
     }

@@ -408,7 +408,7 @@ impl ThresholdEngine {
 
     /// Load `threshold.json`, falling back to built-in defaults when absent.
     pub fn from_config_dir(dir: &Path) -> Result<Self, EngineError> {
-        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
+        let path = dir.join(format!("{ENGINE_NAME}.json"));
         let cfg: ThresholdConfig = config::load_config_or_default(&path)?;
         cfg.validate()?;
         Ok(Self::new(cfg))
