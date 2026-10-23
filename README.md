@@ -206,7 +206,7 @@ A dash (`-`) means no sample is available for that field.
 ### Aggregate line
 
 ```
-INFO status: 1 4 154995/153840/151220
+INFO status: 1 4 154995 153840 151220
 ```
 
 `status:` is the tracing target, which separates status lines from the
