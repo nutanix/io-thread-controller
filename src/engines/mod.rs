@@ -12,17 +12,28 @@ use futures_util::future::join_all;
 use linkme::distributed_slice;
 use thiserror::Error;
 
-use crate::{backends::BackendClientError, config::ConfigError, instance::Instance, util::Path};
+use crate::{
+    backends::BackendClientError,
+    config::{ConfigError, PollConverter},
+    instance::Instance,
+    util::Path,
+};
 
 #[cfg(feature = "threshold-engine")]
 pub mod threshold;
+
+/// Build an engine from `<engine_config_dir>`. Engine durations must be
+/// converted with the supplied converter, which reports invalid durations
+/// together with the controller's after the engine is built.
+pub type EngineBuilder =
+    fn(&Path, &mut PollConverter) -> Result<Box<dyn ScalingEngine>, EngineError>;
 
 /// One in-tree (or out-of-tree) engine factory registered on [`ENGINES`].
 pub struct EngineRegistration {
     /// Stable name matched against `Config::engine`.
     pub name: &'static str,
-    /// Build the engine from `<engine_config_dir>`.
-    pub build: fn(&Path) -> Result<Box<dyn ScalingEngine>, EngineError>,
+    /// Build the engine.
+    pub build: EngineBuilder,
 }
 
 /// Linked-in engine factories. Feature-gated modules append themselves here.
@@ -103,8 +114,6 @@ pub struct EngineTickContext {
     pub psi: PsiSample,
     /// Monotonically increasing tick sequence number.
     pub tick_index: u64,
-    /// Controller poll interval in seconds (for operator-facing durations).
-    pub scale_poll_secs: f64,
 }
 
 impl Default for EngineTickContext {
@@ -116,7 +125,6 @@ impl Default for EngineTickContext {
             host_cpu_util: 0.0,
             psi: PsiSample::default(),
             tick_index: 0,
-            scale_poll_secs: 10.0,
         }
     }
 }
@@ -273,10 +281,11 @@ pub trait ScalingEngine: Send + Sync {
 pub fn load_registered_engine(
     engine_config_dir: &Path,
     name: &str,
+    durations: &mut PollConverter,
 ) -> Result<Box<dyn ScalingEngine>, EngineError> {
     for registration in ENGINES {
         if registration.name == name {
-            return (registration.build)(engine_config_dir);
+            return (registration.build)(engine_config_dir, durations);
         }
     }
     Err(EngineError::NoSuchEngine(name.to_string()))
@@ -315,10 +324,11 @@ mod tests {
     #[test]
     fn load_registered_engine_finds_threshold_and_rejects_unknown() {
         let dir = Path::new("/tmp/missing-engines");
-        let engine = load_registered_engine(&dir, "threshold").unwrap();
+        let mut durations = crate::config::Config::default().poll_period().converter();
+        let engine = load_registered_engine(&dir, "threshold", &mut durations).unwrap();
         assert_eq!(engine.name(), "threshold");
 
-        match load_registered_engine(&dir, "no-such-engine") {
+        match load_registered_engine(&dir, "no-such-engine", &mut durations) {
             Err(EngineError::NoSuchEngine(name)) => assert_eq!(name, "no-such-engine"),
             Ok(_) => panic!("expected NoSuchEngine"),
             Err(other) => panic!("expected NoSuchEngine, got {other}"),

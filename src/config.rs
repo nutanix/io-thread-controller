@@ -5,7 +5,7 @@
 
 //! Configuration for the io-thread-controller daemon.
 
-use std::io;
+use std::{io, time::Duration};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
@@ -16,6 +16,13 @@ use crate::util::Path;
 pub enum ConfigError {
     #[error("invalid configuration value: {0}")]
     InvalidValue(String),
+
+    #[error(
+        "durations must be multiples of scale_poll_secs (set round_up_durations or pass \
+         --round-up-durations to round them up):\n  {}",
+        .0.join("\n  ")
+    )]
+    NotPollMultiple(Vec<String>),
 
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -59,11 +66,15 @@ pub struct Config {
     pub host_cpu_scale_up_ceiling: f64,
     /// Per-VM delay after ordinary successful scale actions.
     #[serde(default = "default_cooldown_secs")]
-    pub cooldown_secs: f64,
-    /// Poll cadence in seconds. The controller refreshes
-    /// per-instance state on each tick and calls the active
-    /// scaling engine for a decision.
-    pub scale_poll_secs: f64,
+    pub cooldown_secs: u64,
+    /// Poll cadence in seconds. The controller refreshes per-instance state on
+    /// each tick and calls the active scaling engine for a decision. Every
+    /// other duration, including engine ones, must be a multiple of it.
+    pub scale_poll_secs: u64,
+    /// Round durations that are not multiples of `scale_poll_secs` up to the
+    /// next multiple, with a warning, instead of rejecting them.
+    #[serde(default)]
+    pub round_up_durations: bool,
     /// Emit a `vm=<id>` status line per tracked instance on
     /// every tick (default `true`).
     #[serde(default = "default_true")]
@@ -111,8 +122,92 @@ fn default_host_cpu_scale_up_ceiling() -> f64 {
     0.9
 }
 
-fn default_cooldown_secs() -> f64 {
-    30.0
+fn default_cooldown_secs() -> u64 {
+    30
+}
+
+/// Controller poll period that durations are expressed in multiples of.
+#[derive(Debug, Clone, Copy)]
+pub struct PollPeriod {
+    secs: u64,
+    round_up: bool,
+}
+
+impl PollPeriod {
+    /// `secs` must be non-zero.
+    pub fn new(secs: u64, round_up: bool) -> Self {
+        assert!(secs != 0, "poll period must be non-zero");
+        Self { secs, round_up }
+    }
+
+    /// Start converting a group of durations to poll counts.
+    pub fn converter(self) -> PollConverter {
+        PollConverter {
+            poll: self,
+            errors: Vec::new(),
+        }
+    }
+}
+
+/// Converts durations to poll counts, collecting every invalid duration so
+/// that they can be reported together.
+pub struct PollConverter {
+    poll: PollPeriod,
+    errors: Vec<String>,
+}
+
+impl PollConverter {
+    /// Return the poll period.
+    pub fn period(&self) -> Duration {
+        Duration::from_secs(self.poll.secs)
+    }
+
+    /// Return how many polls `secs` spans.
+    ///
+    /// A `secs` that is not a multiple of the poll period is either rounded
+    /// up in place, so the effective configuration shows the value in use, or
+    /// recorded as an error for [`Self::finish`].
+    pub fn polls(&mut self, name: &str, secs: &mut u64) -> u32 {
+        let period = self.poll.secs;
+        let mut polls = *secs / period;
+        if !secs.is_multiple_of(period) {
+            let below = polls * period;
+            let above = below.saturating_add(period);
+            if !self.poll.round_up {
+                self.errors.push(format!(
+                    "{name} ({secs}) is not a multiple of scale_poll_secs ({period}); \
+                     nearest valid values: {below} or {above}"
+                ));
+                return 0;
+            }
+            tracing::warn!(
+                target: "controller",
+                setting = name,
+                configured = *secs,
+                effective = above,
+                "rounded duration up to a multiple of scale_poll_secs"
+            );
+            *secs = above;
+            polls += 1;
+        }
+        match u32::try_from(polls) {
+            Ok(polls) => polls,
+            Err(_) => {
+                self.errors
+                    .push(format!("{name} ({secs}) spans too many polls"));
+                0
+            }
+        }
+    }
+
+    /// Fail with every duration rejected by [`Self::polls`].
+    pub fn finish(self) -> Result<(), ConfigError> {
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::NotPollMultiple(self.errors))
+        }
+    }
 }
 
 /// Deserialise a human-readable percent to a floating point value.
@@ -140,11 +235,12 @@ impl Default for Config {
             engine: "threshold".to_string(),
             engine_config_dir: Path::new("/etc/io-thread-controller.d/engines"),
             backend_config_dir: Path::new("/etc/io-thread-controller.d/backends"),
-            scale_poll_secs: 10.0,
+            scale_poll_secs: 10,
+            round_up_durations: false,
             min_thread_count: 2,
             max_thread_count: 8,
             host_cpu_scale_up_ceiling: 0.9,
-            cooldown_secs: 30.0,
+            cooldown_secs: default_cooldown_secs(),
             vm_state_path: Path::new("/run/io-thread-controller/vm-ownership.json"),
             enable_per_vm_status_line: true,
             enable_per_vm_main_log: false,
@@ -200,11 +296,26 @@ fn load_config_value(path: &Path) -> Result<serde_json::Value, ConfigError> {
     Ok(merged)
 }
 
+impl Config {
+    /// Return the poll period that every other duration is a multiple of.
+    ///
+    /// Panics if `scale_poll_secs` is zero, which [`validate_config`]
+    /// rejects.
+    pub fn poll_period(&self) -> PollPeriod {
+        PollPeriod::new(self.scale_poll_secs, self.round_up_durations)
+    }
+}
+
 // TODO add a RawConfig or ValidatedConfig to ensure an unvalidated config
 // cannot be constructed outside this module.
-/// Ensures configuration is internally coherent.
-pub fn validate_config(cfg: &Config) -> Result<(), ConfigError> {
-    if !cfg.scale_poll_secs.is_finite() || cfg.scale_poll_secs <= 0.0 {
+/// Ensures configuration is internally coherent, rounding durations up to
+/// poll multiples when `round_up_durations` is set.
+///
+/// Invalid durations are not reported yet: the returned converter holds them
+/// so that the engine can convert its own durations with it, and
+/// [`PollConverter::finish`] then reports every invalid duration at once.
+pub fn validate_config(cfg: &mut Config) -> Result<PollConverter, ConfigError> {
+    if cfg.scale_poll_secs == 0 {
         return Err(ConfigError::InvalidValue(
             "scale_poll_secs must be > 0".to_string(),
         ));
@@ -226,12 +337,9 @@ pub fn validate_config(cfg: &Config) -> Result<(), ConfigError> {
             "host_cpu_scale_up_ceiling_percent must be in [0, 100]".to_string(),
         ));
     }
-    if !(cfg.cooldown_secs.is_finite() && cfg.cooldown_secs >= 0.0) {
-        return Err(ConfigError::InvalidValue(
-            "cooldown_secs must be finite and non-negative".to_string(),
-        ));
-    }
-    Ok(())
+    let mut converter = cfg.poll_period().converter();
+    converter.polls("cooldown_secs", &mut cfg.cooldown_secs);
+    Ok(converter)
 }
 
 /// Serialise the default config as indented JSON for CLI
@@ -248,10 +356,10 @@ mod tests {
     /// engine with a 10s poll.
     #[test]
     fn default_config_is_valid() {
-        let cfg = Config::default();
+        let mut cfg = Config::default();
         assert_eq!(cfg.engine, "threshold");
-        assert!((cfg.scale_poll_secs - 10.0).abs() < f64::EPSILON);
-        validate_config(&cfg).unwrap();
+        assert_eq!(cfg.scale_poll_secs, 10);
+        validate_config(&mut cfg).unwrap().finish().unwrap();
     }
 
     /// Test that `validate_config` rejects an empty engine name.
@@ -259,24 +367,96 @@ mod tests {
     fn validate_rejects_empty_engine() {
         let mut cfg = Config::default();
         cfg.engine.clear();
-        let err = validate_config(&cfg).unwrap_err().to_string();
+        let err = validate_config(&mut cfg).err().unwrap().to_string();
         assert!(err.contains("engine must be non-empty"));
     }
 
-    /// Test that `validate_config` rejects non-positive
-    /// `scale_poll_secs`.
+    /// Test that `validate_config` rejects a zero `scale_poll_secs`.
     #[test]
-    fn validate_rejects_non_positive_poll() {
+    fn validate_rejects_zero_poll() {
         let mut cfg = Config {
-            scale_poll_secs: 0.0,
+            scale_poll_secs: 0,
             ..Default::default()
         };
-        let err = validate_config(&cfg).unwrap_err().to_string();
+        let err = validate_config(&mut cfg).err().unwrap().to_string();
         assert!(err.contains("scale_poll_secs must be > 0"));
+    }
 
-        cfg.scale_poll_secs = f64::NAN;
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("scale_poll_secs must be > 0"));
+    /// Tests that a cooldown that is not a multiple of the poll period is
+    /// rejected with the nearest valid values, and left unchanged.
+    #[test]
+    fn test_validate_rejects_cooldown_not_poll_multiple() {
+        let mut cfg = Config {
+            cooldown_secs: 25,
+            ..Default::default()
+        };
+        let err = validate_config(&mut cfg)
+            .unwrap()
+            .finish()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "cooldown_secs (25) is not a multiple of scale_poll_secs (10); nearest valid \
+                 values: 20 or 30"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("--round-up-durations"), "{err}");
+        assert_eq!(cfg.cooldown_secs, 25);
+    }
+
+    /// Tests that `round_up_durations` rounds a non-multiple cooldown up to
+    /// the next poll multiple instead of rejecting it.
+    #[test]
+    fn test_validate_rounds_up_cooldown() {
+        let mut cfg = Config {
+            cooldown_secs: 25,
+            round_up_durations: true,
+            ..Default::default()
+        };
+        validate_config(&mut cfg).unwrap().finish().unwrap();
+        assert_eq!(cfg.cooldown_secs, 30);
+    }
+
+    /// Tests that the poll converter counts polls, accepts zero, reports
+    /// every invalid duration at once, and rounds up when enabled.
+    #[test]
+    fn test_poll_converter() {
+        let mut converter = PollPeriod::new(4, false).converter();
+        assert_eq!(converter.polls("zero", &mut 0), 0);
+        assert_eq!(converter.polls("exact", &mut 12), 3);
+        converter.polls("short", &mut 1);
+        converter.polls("long", &mut 30);
+        let err = converter.finish().unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "short (1) is not a multiple of scale_poll_secs (4); nearest valid values: 0 or 4"
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(
+                "long (30) is not a multiple of scale_poll_secs (4); nearest valid values: 28 or 32"
+            ),
+            "{err}"
+        );
+
+        let mut converter = PollPeriod::new(4, true).converter();
+        let mut secs = 30;
+        assert_eq!(converter.polls("long", &mut secs), 8);
+        assert_eq!(secs, 32);
+        converter.finish().unwrap();
+    }
+
+    /// Tests that durations must be integer seconds.
+    #[test]
+    fn test_durations_must_be_integers() {
+        let err = serde_json::from_str::<Config>(
+            r#"{"engine": "foo", "engine_config_dir": "/engines", "backend_config_dir": "/backends", "scale_poll_secs": 7.5, "vm_state_path": "/path/to/vm-state"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expected u64"), "{err}");
     }
 
     /// Test that minimal valid JSON loads into `Config` with the
@@ -291,7 +471,7 @@ mod tests {
                 "engine": "threshold",
                 "engine_config_dir": "/etc/io-thread-controller/engines",
                 "backend_config_dir": "/etc/io-thread-controller/backends",
-                "scale_poll_secs": 7.5,
+                "scale_poll_secs": 7,
                 "vm_state_path": "/var/lib/io-thread-controller/vm-state.json"
             }"#,
         )
@@ -299,7 +479,7 @@ mod tests {
 
         let cfg: Config = load_json_with_includes(Path::new(path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.engine, "threshold");
-        assert!((cfg.scale_poll_secs - 7.5).abs() < f64::EPSILON);
+        assert_eq!(cfg.scale_poll_secs, 7);
         assert_eq!(
             cfg.engine_config_dir.as_os_str(),
             std::ffi::OsStr::new("/etc/io-thread-controller/engines")
@@ -318,7 +498,7 @@ mod tests {
                 "engine": "threshold",
                 "engine_config_dir": "/engines",
                 "backend_config_dir": "/backends",
-                "scale_poll_secs": 1.0,
+                "scale_poll_secs": 1,
                 "not_a_real_field": true
             }"#,
         )
@@ -334,7 +514,7 @@ mod tests {
     fn dump_default_config_contains_engine() {
         let dumped = dump_default_config();
         assert!(dumped.contains(r#""engine": "threshold""#));
-        assert!(dumped.contains(r#""scale_poll_secs": 10.0"#));
+        assert!(dumped.contains(r#""scale_poll_secs": 10"#));
         assert!(dumped.contains(r#""/etc/io-thread-controller.d/engines""#));
     }
 
@@ -346,7 +526,8 @@ mod tests {
         assert_eq!(cfg.min_thread_count, 1);
         assert_eq!(cfg.max_thread_count, 8);
         assert!((cfg.host_cpu_scale_up_ceiling - 0.9).abs() < f64::EPSILON);
-        assert_eq!(cfg.cooldown_secs, 30.0);
+        assert_eq!(cfg.cooldown_secs, 30);
+        assert!(!cfg.round_up_durations);
 
         let serialized = serde_json::to_string(&cfg).unwrap();
         assert!(serialized.contains(r#""host_cpu_scale_up_ceiling_percent":90.0"#));

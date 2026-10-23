@@ -5,14 +5,18 @@
 
 //! Threshold engine: size a worker pool to carry the observed CPU load.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{ConfigError, deserialize_percent, serialize_percent},
+    config::{ConfigError, PollConverter, deserialize_percent, serialize_percent},
     engines::{
         AppliedOutcome, EngineError, EngineRegistration, EngineTickContext, ScaleAction,
         ScalingEngine,
@@ -24,8 +28,11 @@ use crate::{
 /// Registry and configuration name of the threshold engine.
 pub const ENGINE_NAME: &str = "threshold";
 
-fn build_threshold_engine(dir: &Path) -> Result<Box<dyn ScalingEngine>, EngineError> {
-    Ok(Box::new(ThresholdEngine::from_config_dir(dir)?))
+fn build_threshold_engine(
+    dir: &Path,
+    durations: &mut PollConverter,
+) -> Result<Box<dyn ScalingEngine>, EngineError> {
+    Ok(Box::new(ThresholdEngine::from_config_dir(dir, durations)?))
 }
 
 #[linkme::distributed_slice(super::ENGINES)]
@@ -35,6 +42,8 @@ static THRESHOLD_ENGINE: EngineRegistration = EngineRegistration {
 };
 
 /// Scale, sustain, and post-action validation settings.
+///
+/// Every duration must be a multiple of the controller poll period.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdConfig {
@@ -46,9 +55,9 @@ pub struct ThresholdConfig {
         serialize_with = "serialize_percent"
     )]
     pub scale_up_threshold: f64,
-    /// Consecutive eligible polls required before scale-down.
-    #[serde(default = "default_scale_down_sustain_polls")]
-    pub scale_down_sustain_polls: u32,
+    /// Seconds scale-down must stay eligible before it is proposed.
+    #[serde(default = "default_scale_down_sustain_secs")]
+    pub scale_down_sustain_secs: u64,
     /// Maximum number of threads than can be reduced in a scale down operation.
     /// 0 means unlimited.
     #[serde(default = "default_max_scale_down_step")]
@@ -69,39 +78,53 @@ pub struct ThresholdConfig {
         serialize_with = "serialize_percent"
     )]
     pub scale_down_revert_drop: f64,
-    /// Complete samples to wait before validating a successful action.
-    #[serde(default = "default_scale_validation_sample_polls")]
-    pub scale_validation_sample_polls: u32,
-    /// Additional validation polls per target thread after a scale action.
+    /// Seconds to sample after a successful action before validating it.
+    #[serde(default = "default_scale_validation_delay_secs")]
+    pub scale_validation_delay_secs: u64,
+    /// Additional validation seconds per target thread after a scale action.
     #[serde(default)]
-    pub scale_validation_sample_polls_per_thread: u32,
+    pub scale_validation_delay_per_thread_secs: u64,
     /// Suppress scale-up after the VM's cgroup reports new throttled CPU time.
     #[serde(default = "default_true")]
     pub block_scale_up_when_cgroup_throttled: bool,
-    /// Polls after a failed scale-up revert during which metrics are ignored.
-    #[serde(default = "default_post_revert_up_grace_polls")]
-    pub post_revert_up_grace_polls: u32,
-    /// Polls after grace spent measuring a settled baseline while scale-up is
-    /// still blocked.
-    #[serde(default = "default_post_revert_up_recovery_polls")]
-    pub post_revert_up_recovery_polls: u32,
-    /// Cap on the post-revert hold (grace plus recovery), which doubles with
-    /// each consecutive failed scale-up. Zero disables the backoff.
-    #[serde(default = "default_post_revert_up_backoff_max_polls")]
-    pub post_revert_up_backoff_max_polls: u32,
-    /// Cap on the low-utilisation polls required before scale-down, which
-    /// doubles with each consecutive failed scale-down. Zero disables the
+    /// Seconds after a failed scale-up revert during which metrics are
+    /// ignored.
+    #[serde(default = "default_post_revert_up_grace_secs")]
+    pub post_revert_up_grace_secs: u64,
+    /// Seconds after grace spent measuring a settled baseline while scale-up
+    /// is still blocked.
+    #[serde(default = "default_post_revert_up_recovery_secs")]
+    pub post_revert_up_recovery_secs: u64,
+    /// Cap in seconds on the post-revert hold (grace plus recovery), which
+    /// doubles with each consecutive failed scale-up. Zero disables the
     /// backoff.
-    #[serde(default = "default_scale_down_backoff_max_polls")]
-    pub scale_down_backoff_max_polls: u32,
+    #[serde(default = "default_post_revert_up_backoff_max_secs")]
+    pub post_revert_up_backoff_max_secs: u64,
+    /// Cap in seconds on the low-utilisation time required before scale-down,
+    /// which doubles with each consecutive failed scale-down. Zero disables
+    /// the backoff.
+    #[serde(default = "default_scale_down_backoff_max_secs")]
+    pub scale_down_backoff_max_secs: u64,
+}
+
+/// [`ThresholdConfig`] durations converted to controller polls.
+#[derive(Debug, Clone, Copy)]
+struct ThresholdPolls {
+    scale_down_sustain: u32,
+    scale_validation_delay: u32,
+    scale_validation_delay_per_thread: u32,
+    post_revert_up_grace: u32,
+    post_revert_up_recovery: u32,
+    post_revert_up_backoff_max: u32,
+    scale_down_backoff_max: u32,
 }
 
 fn default_scale_up_threshold() -> f64 {
     0.95
 }
 
-fn default_scale_down_sustain_polls() -> u32 {
-    3
+fn default_scale_down_sustain_secs() -> u64 {
+    30
 }
 
 fn default_max_scale_down_step() -> u32 {
@@ -114,23 +137,23 @@ fn default_scale_up_min_gain() -> f64 {
 fn default_scale_down_revert_drop() -> f64 {
     0.05
 }
-fn default_scale_validation_sample_polls() -> u32 {
-    2
+fn default_scale_validation_delay_secs() -> u64 {
+    20
 }
 fn default_true() -> bool {
     true
 }
-fn default_post_revert_up_grace_polls() -> u32 {
-    1
+fn default_post_revert_up_grace_secs() -> u64 {
+    10
 }
-fn default_post_revert_up_recovery_polls() -> u32 {
-    2
+fn default_post_revert_up_recovery_secs() -> u64 {
+    20
 }
-fn default_post_revert_up_backoff_max_polls() -> u32 {
-    30
+fn default_post_revert_up_backoff_max_secs() -> u64 {
+    300
 }
-fn default_scale_down_backoff_max_polls() -> u32 {
-    120
+fn default_scale_down_backoff_max_secs() -> u64 {
+    1200
 }
 
 /// `base` doubled `doublings` times, capped at `max` (never below `base`).
@@ -147,17 +170,17 @@ impl Default for ThresholdConfig {
     fn default() -> Self {
         Self {
             scale_up_threshold: default_scale_up_threshold(),
-            scale_down_sustain_polls: default_scale_down_sustain_polls(),
+            scale_down_sustain_secs: default_scale_down_sustain_secs(),
             max_scale_down_step: default_max_scale_down_step(),
             scale_up_min_gain: default_scale_up_min_gain(),
             scale_down_revert_drop: default_scale_down_revert_drop(),
-            scale_validation_sample_polls: default_scale_validation_sample_polls(),
-            scale_validation_sample_polls_per_thread: 0,
+            scale_validation_delay_secs: default_scale_validation_delay_secs(),
+            scale_validation_delay_per_thread_secs: 0,
             block_scale_up_when_cgroup_throttled: true,
-            post_revert_up_grace_polls: default_post_revert_up_grace_polls(),
-            post_revert_up_recovery_polls: default_post_revert_up_recovery_polls(),
-            post_revert_up_backoff_max_polls: default_post_revert_up_backoff_max_polls(),
-            scale_down_backoff_max_polls: default_scale_down_backoff_max_polls(),
+            post_revert_up_grace_secs: default_post_revert_up_grace_secs(),
+            post_revert_up_recovery_secs: default_post_revert_up_recovery_secs(),
+            post_revert_up_backoff_max_secs: default_post_revert_up_backoff_max_secs(),
+            scale_down_backoff_max_secs: default_scale_down_backoff_max_secs(),
         }
     }
 }
@@ -186,6 +209,39 @@ impl ThresholdConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Convert every duration to polls, rounding durations up in place when
+    /// `converter` allows it.
+    fn resolve_polls(&mut self, converter: &mut PollConverter) -> ThresholdPolls {
+        ThresholdPolls {
+            scale_down_sustain: converter
+                .polls("scale_down_sustain_secs", &mut self.scale_down_sustain_secs),
+            scale_validation_delay: converter.polls(
+                "scale_validation_delay_secs",
+                &mut self.scale_validation_delay_secs,
+            ),
+            scale_validation_delay_per_thread: converter.polls(
+                "scale_validation_delay_per_thread_secs",
+                &mut self.scale_validation_delay_per_thread_secs,
+            ),
+            post_revert_up_grace: converter.polls(
+                "post_revert_up_grace_secs",
+                &mut self.post_revert_up_grace_secs,
+            ),
+            post_revert_up_recovery: converter.polls(
+                "post_revert_up_recovery_secs",
+                &mut self.post_revert_up_recovery_secs,
+            ),
+            post_revert_up_backoff_max: converter.polls(
+                "post_revert_up_backoff_max_secs",
+                &mut self.post_revert_up_backoff_max_secs,
+            ),
+            scale_down_backoff_max: converter.polls(
+                "scale_down_backoff_max_secs",
+                &mut self.scale_down_backoff_max_secs,
+            ),
+        }
     }
 }
 
@@ -390,6 +446,9 @@ fn iops_rate(start: IoSample, end: IoSample) -> u64 {
 /// Scaling engine driven by CPU utilisation thresholds.
 pub struct ThresholdEngine {
     cfg: ThresholdConfig,
+    /// `cfg` durations in polls.
+    polls: ThresholdPolls,
+    poll_period: Duration,
 
     // TODO the controller already maintains this mapping, an alternative would
     // be for this engine to define a private type and keep a reference to
@@ -398,16 +457,25 @@ pub struct ThresholdEngine {
 }
 
 impl ThresholdEngine {
-    /// Construct an engine from validated settings.
-    pub fn new(cfg: ThresholdConfig) -> Self {
-        Self {
+    /// Validate `cfg` and convert its durations to polls.
+    ///
+    /// The engine must not be used before `durations` finished without error.
+    pub fn new(
+        mut cfg: ThresholdConfig,
+        durations: &mut PollConverter,
+    ) -> Result<Self, ConfigError> {
+        cfg.validate()?;
+        let polls = cfg.resolve_polls(durations);
+        Ok(Self {
             cfg,
+            polls,
+            poll_period: durations.period(),
             state: Mutex::new(HashMap::new()),
-        }
+        })
     }
 
     /// Load `threshold.json`, falling back to built-in defaults when absent.
-    pub fn from_config_dir(dir: &Path) -> Result<Self, EngineError> {
+    pub fn from_config_dir(dir: &Path, durations: &mut PollConverter) -> Result<Self, EngineError> {
         let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
         // TODO TOCTOU, blindly load and return default if ENOENT
         let cfg: ThresholdConfig = if path.exists() {
@@ -415,20 +483,20 @@ impl ThresholdEngine {
         } else {
             ThresholdConfig::default()
         };
-        cfg.validate()?;
-        Ok(Self::new(cfg))
+        Ok(Self::new(cfg, durations)?)
     }
 
-    /// Return the engine's effective configuration.
+    /// Return the engine's effective configuration, with any rounded-up
+    /// durations.
     pub fn config(&self) -> &ThresholdConfig {
         &self.cfg
     }
 
     /// Return the validation polls for an action's resulting thread count.
     fn validation_sample_polls(&self, target_thread_count: u32) -> u32 {
-        self.cfg.scale_validation_sample_polls.saturating_add(
-            self.cfg
-                .scale_validation_sample_polls_per_thread
+        self.polls.scale_validation_delay.saturating_add(
+            self.polls
+                .scale_validation_delay_per_thread
                 .saturating_mul(target_thread_count),
         )
     }
@@ -514,11 +582,11 @@ impl ThresholdEngine {
     /// failed scale-ups. The backoff extends grace so the recovery baseline
     /// window keeps its configured length.
     fn post_revert_up_grace_polls(&self, failures: u32) -> u32 {
-        let recovery = self.cfg.post_revert_up_recovery_polls;
+        let recovery = self.polls.post_revert_up_recovery;
         let hold = backoff_polls(
-            self.cfg.post_revert_up_grace_polls.saturating_add(recovery),
+            self.polls.post_revert_up_grace.saturating_add(recovery),
             failures.saturating_sub(1),
-            self.cfg.post_revert_up_backoff_max_polls,
+            self.polls.post_revert_up_backoff_max,
         );
         hold.saturating_sub(recovery)
     }
@@ -527,18 +595,20 @@ impl ThresholdEngine {
     /// consecutive failed scale-downs.
     fn scale_down_sustain_polls(&self, failures: u32) -> u32 {
         backoff_polls(
-            self.cfg.scale_down_sustain_polls,
+            self.polls.scale_down_sustain,
             failures,
-            self.cfg.scale_down_backoff_max_polls,
+            self.polls.scale_down_backoff_max,
         )
     }
 
-    /// Seconds until a post-scale IOPS sample is evaluated.
-    fn validation_after_secs(&self, scale_poll_secs: f64, target_thread_count: u32) -> f64 {
+    /// Time until a post-scale IOPS sample is evaluated.
+    fn validation_after(&self, target_thread_count: u32) -> Duration {
         // Countdown consumes the effective validation polls, then the next
         // tick performs the comparison.
-        // TODO use Duration
-        (f64::from(self.validation_sample_polls(target_thread_count)) + 1.0) * scale_poll_secs
+        self.poll_period.saturating_mul(
+            self.validation_sample_polls(target_thread_count)
+                .saturating_add(1),
+        )
     }
 }
 
@@ -580,7 +650,7 @@ fn log_scale_up_decision(
     target: u32,
     current_iops: u64,
     min_target_iops: u64,
-    validation_after_secs: f64,
+    validation_after: Duration,
 ) {
     tracing::info!(
         target: "engine",
@@ -590,7 +660,7 @@ fn log_scale_up_decision(
         thr = %format!("{thread_count}->{target}"),
         current_iops,
         min_target_iops,
-        validation_after_secs,
+        validation_after_secs = validation_after.as_secs(),
         "threshold scaling decision"
     );
 }
@@ -715,7 +785,7 @@ impl ScalingEngine for ThresholdEngine {
                     &instance.id,
                     failures,
                     grace_polls,
-                    self.cfg.post_revert_up_recovery_polls,
+                    self.polls.post_revert_up_recovery,
                 );
             } else {
                 instance_state.consecutive_failed_downs =
@@ -730,8 +800,8 @@ impl ScalingEngine for ThresholdEngine {
             return ScaleAction::Revert(target);
         }
 
-        let block_scale_up = instance_state
-            .advance_post_revert_up_hold(sample, self.cfg.post_revert_up_recovery_polls);
+        let block_scale_up =
+            instance_state.advance_post_revert_up_hold(sample, self.polls.post_revert_up_recovery);
         // Grace ignores metrics; recovery updates the rate inside advance.
         // Once the hold ends (or if there was none), refresh the normal baseline.
         if !block_scale_up {
@@ -760,13 +830,13 @@ impl ScalingEngine for ThresholdEngine {
             // or equal to the max_thread_count here.
             let target = (thread_count + 1).min(context.max_thread_count);
             let current_iops = instance_state.current_baseline_iops;
-            let (min_target_iops, validation_after_secs) = if self.cfg.scale_up_min_gain > 0.0 {
+            let (min_target_iops, validation_after) = if self.cfg.scale_up_min_gain > 0.0 {
                 (
                     ((current_iops as f64) * (1.0 + self.cfg.scale_up_min_gain)).ceil() as u64,
-                    self.validation_after_secs(context.scale_poll_secs, target),
+                    self.validation_after(target),
                 )
             } else {
-                (current_iops, 0.0)
+                (current_iops, Duration::ZERO)
             };
             log_scale_up_decision(
                 instance,
@@ -775,7 +845,7 @@ impl ScalingEngine for ThresholdEngine {
                 target,
                 current_iops,
                 min_target_iops,
-                validation_after_secs,
+                validation_after,
             );
             return ScaleAction::Up(target);
         }
@@ -865,6 +935,7 @@ mod tests {
     };
     use crate::{
         backends::BackendClientError,
+        config::PollPeriod,
         engines::{AppliedOutcome, EngineTickContext, ScaleAction, ScalingEngine},
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
@@ -921,10 +992,28 @@ mod tests {
         instance
     }
 
+    const POLL_SECS: u64 = 10;
+
+    /// Return the seconds `count` polls span.
+    fn polls(count: u64) -> u64 {
+        POLL_SECS * count
+    }
+
+    /// Build an engine whose durations are converted with `round_up`.
+    fn try_new_engine(cfg: ThresholdConfig, round_up: bool) -> Result<ThresholdEngine, String> {
+        let mut durations = PollPeriod::new(POLL_SECS, round_up).converter();
+        let engine = ThresholdEngine::new(cfg, &mut durations).map_err(|e| e.to_string())?;
+        durations.finish().map_err(|e| e.to_string())?;
+        Ok(engine)
+    }
+
+    fn new_engine(cfg: ThresholdConfig) -> ThresholdEngine {
+        try_new_engine(cfg, false).unwrap()
+    }
+
     fn context_at(now: Instant) -> EngineTickContext {
         EngineTickContext {
             now,
-            scale_poll_secs: 10.0,
             ..EngineTickContext::default()
         }
     }
@@ -994,10 +1083,10 @@ mod tests {
 
     #[fixture]
     fn engine() -> ThresholdEngine {
-        ThresholdEngine::new(ThresholdConfig {
+        new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_up_min_gain: 0.05,
-            scale_validation_sample_polls: 0,
+            scale_validation_delay_secs: 0,
             ..Default::default()
         })
     }
@@ -1112,12 +1201,12 @@ mod tests {
     #[tokio::test]
     async fn test_failed_scale_up_grace_then_recovery_baseline(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_up_min_gain: 0.05,
-            scale_validation_sample_polls: 0,
-            post_revert_up_grace_polls: 1,
-            post_revert_up_recovery_polls: 2,
+            scale_validation_delay_secs: 0,
+            post_revert_up_grace_secs: polls(1),
+            post_revert_up_recovery_secs: polls(2),
             ..Default::default()
         });
         let t0 = Instant::now();
@@ -1193,13 +1282,13 @@ mod tests {
     #[tokio::test]
     async fn test_scale_down_allowed_during_post_revert_up_hold(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_up_min_gain: 0.05,
-            scale_validation_sample_polls: 0,
-            scale_down_sustain_polls: 1,
-            post_revert_up_grace_polls: 2,
-            post_revert_up_recovery_polls: 2,
+            scale_validation_delay_secs: 0,
+            scale_down_sustain_secs: polls(1),
+            post_revert_up_grace_secs: polls(2),
+            post_revert_up_recovery_secs: polls(2),
             ..Default::default()
         });
         let t0 = Instant::now();
@@ -1240,11 +1329,11 @@ mod tests {
     #[tokio::test]
     async fn scale_down_keeps_shrink_when_util_stays_low(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_down_revert_drop: 0.05,
-            scale_validation_sample_polls: 0,
-            scale_down_sustain_polls: 1,
+            scale_validation_delay_secs: 0,
+            scale_down_sustain_secs: polls(1),
             ..Default::default()
         });
         let t0 = Instant::now();
@@ -1280,10 +1369,10 @@ mod tests {
         #[future] instance: Arc<Instance>,
     ) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_down_revert_drop: 0.05,
-            scale_validation_sample_polls: 0,
+            scale_validation_delay_secs: 0,
             ..Default::default()
         });
         let t0 = Instant::now();
@@ -1364,13 +1453,13 @@ mod tests {
     #[tokio::test]
     async fn test_failed_scale_ups_back_off_until_kept(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_up_min_gain: 0.05,
-            scale_validation_sample_polls: 0,
-            post_revert_up_grace_polls: 1,
-            post_revert_up_recovery_polls: 2,
-            post_revert_up_backoff_max_polls: 12,
+            scale_validation_delay_secs: 0,
+            post_revert_up_grace_secs: polls(1),
+            post_revert_up_recovery_secs: polls(2),
+            post_revert_up_backoff_max_secs: polls(12),
             ..Default::default()
         });
         engine.on_instance_added(&instance).await;
@@ -1409,12 +1498,12 @@ mod tests {
     #[tokio::test]
     async fn test_failed_scale_downs_back_off_until_scale_up(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_down_revert_drop: 0.05,
-            scale_validation_sample_polls: 0,
-            scale_down_sustain_polls: 3,
-            scale_down_backoff_max_polls: 20,
+            scale_validation_delay_secs: 0,
+            scale_down_sustain_secs: polls(3),
+            scale_down_backoff_max_secs: polls(20),
             ..Default::default()
         });
         engine.on_instance_added(&instance).await;
@@ -1509,9 +1598,9 @@ mod tests {
 
     #[test]
     fn test_validation_polls_increase_with_target_thread_count() {
-        let engine = ThresholdEngine::new(ThresholdConfig {
-            scale_validation_sample_polls: 2,
-            scale_validation_sample_polls_per_thread: 3,
+        let engine = new_engine(ThresholdConfig {
+            scale_validation_delay_secs: polls(2),
+            scale_validation_delay_per_thread_secs: polls(3),
             ..Default::default()
         });
 
@@ -1547,7 +1636,7 @@ mod tests {
 
         set_observation(&instance, 5, 0.88, 220_000).await;
 
-        for i in 0..engine.cfg.scale_validation_sample_polls {
+        for i in 0..engine.polls.scale_validation_delay {
             assert_eq!(
                 engine
                     .evaluate(
@@ -1585,10 +1674,10 @@ mod tests {
         #[future] instance: Arc<Instance>,
     ) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig {
+        let engine = new_engine(ThresholdConfig {
             scale_up_threshold: 0.8,
             scale_up_min_gain: 0.05,
-            scale_validation_sample_polls: 2,
+            scale_validation_delay_secs: polls(2),
             ..Default::default()
         });
         let t0 = Instant::now();
@@ -1609,7 +1698,7 @@ mod tests {
             .await;
         set_observation(&instance, 5, 0.88, 140_000).await;
 
-        for i in 0..engine.cfg.scale_validation_sample_polls {
+        for i in 0..engine.polls.scale_validation_delay {
             assert_eq!(
                 engine
                     .evaluate(
@@ -1670,10 +1759,55 @@ mod tests {
     #[test]
     fn missing_config_file_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let engine =
-            ThresholdEngine::from_config_dir(&Path::new(dir.path().to_str().unwrap())).unwrap();
+        let mut durations = PollPeriod::new(POLL_SECS, false).converter();
+        let engine = ThresholdEngine::from_config_dir(
+            &Path::new(dir.path().to_str().unwrap()),
+            &mut durations,
+        )
+        .unwrap();
+        durations.finish().unwrap();
         assert_eq!(engine.name(), super::ENGINE_NAME);
         let _ = engine.config();
+    }
+
+    /// Tests that the default durations are multiples of the default
+    /// controller poll period.
+    #[test]
+    fn test_defaults_are_multiples_of_default_poll_period() {
+        let mut durations = crate::config::Config::default().poll_period().converter();
+        ThresholdEngine::new(ThresholdConfig::default(), &mut durations).unwrap();
+        durations.finish().unwrap();
+    }
+
+    /// Tests that every duration that is not a multiple of the poll period is
+    /// reported in a single error.
+    #[test]
+    fn test_durations_not_poll_multiples_are_all_rejected() {
+        let cfg = ThresholdConfig {
+            scale_down_sustain_secs: 25,
+            post_revert_up_grace_secs: 5,
+            ..Default::default()
+        };
+        let err = try_new_engine(cfg, false).err().unwrap();
+        assert!(err.contains("scale_down_sustain_secs (25)"), "{err}");
+        assert!(err.contains("post_revert_up_grace_secs (5)"), "{err}");
+    }
+
+    /// Tests that rounding converts durations to the next whole poll and
+    /// that the effective configuration shows the rounded values.
+    #[test]
+    fn test_rounded_durations_are_used_and_dumped() {
+        let cfg = ThresholdConfig {
+            scale_down_sustain_secs: 25,
+            scale_validation_delay_secs: 1,
+            ..Default::default()
+        };
+        let engine = try_new_engine(cfg, true).unwrap();
+        assert_eq!(engine.polls.scale_down_sustain, 3);
+        assert_eq!(engine.polls.scale_validation_delay, 1);
+        let dumped = engine.dump_config();
+        assert_eq!(dumped["scale_down_sustain_secs"], 30);
+        assert_eq!(dumped["scale_validation_delay_secs"], 10);
     }
 
     /// Test that CPU utilisation below scale-up/down thresholds yields
@@ -1682,7 +1816,7 @@ mod tests {
     #[tokio::test]
     async fn evaluate_holds_when_util_below_thresholds(#[future] instance: Arc<Instance>) {
         let instance = instance.await;
-        let engine = ThresholdEngine::new(ThresholdConfig::default());
+        let engine = new_engine(ThresholdConfig::default());
         let action = engine
             .evaluate(&instance, &context_at(Instant::now()))
             .await;

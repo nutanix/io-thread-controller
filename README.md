@@ -90,6 +90,20 @@ Controller, engine, and backend JSON files may contain an `include` field. Its
 path is resolved relative to the including file, loaded recursively, and merged
 before the including file's keys are applied.
 
+## Durations
+
+Durations are integer seconds in settings ending in `_secs`. Every duration,
+including engine ones, must be a whole multiple of `scale_poll_secs`, and zero
+is allowed. Otherwise the daemon refuses to start and lists each offending
+setting with the nearest valid values. Changing only `scale_poll_secs` can
+therefore invalidate other settings.
+
+To try a new poll period without rewriting the other settings, set
+`round_up_durations` or pass `--round-up-durations`. Each offending duration is
+then rounded up to the next multiple with a warning. At startup the daemon logs
+the effective controller, engine, and backend configuration, which shows the
+rounded values.
+
 ## Thread-name filtering
 
 Backends may select fallback `/proc` CPU samples with regular expressions and
@@ -131,21 +145,21 @@ queries and thread-count changes need an independently stateful handle for each
 VM. This keeps the controller independent of libvirt, QMP, control sockets, and
 other transport details.
 
-After a successful action, the engine waits
-`scale_validation_sample_polls` complete samples. The optional
-`scale_validation_sample_polls_per_thread` setting adds that many samples for
-each thread in the resulting pool, allowing larger pools more time to settle.
+After a successful action, the engine samples for
+`scale_validation_delay_secs`. The optional
+`scale_validation_delay_per_thread_secs` setting adds that much time for each
+thread in the resulting pool, allowing larger pools more time to settle.
 A scale-up is reverted unless IOPS gained at least
 `scale_up_min_gain_percent`; a scale-down is reverted when IOPS lost more than
 `scale_down_revert_drop_percent`. Setting either percentage to zero disables
 that direction's validation.
 
 Repeated failures back off per VM. After a reverted scale-up, scale-up is
-blocked for `post_revert_up_grace_polls` plus `post_revert_up_recovery_polls`;
+blocked for `post_revert_up_grace_secs` plus `post_revert_up_recovery_secs`;
 that hold doubles with each consecutive failed scale-up, up to
-`post_revert_up_backoff_max_polls`. After a reverted scale-down, the next
-scale-down needs `scale_down_sustain_polls` low-utilisation polls doubled once
-per consecutive failure, up to `scale_down_backoff_max_polls`. A kept action
+`post_revert_up_backoff_max_secs`. After a reverted scale-down, the next
+scale-down needs `scale_down_sustain_secs` of low utilisation doubled once per
+consecutive failure, up to `scale_down_backoff_max_secs`. A kept action
 resets its direction's backoff, as does an applied action in the opposite
 direction. Setting a maximum to zero disables that direction's backoff.
 
