@@ -17,7 +17,6 @@ use io_thread_controller::{
 };
 use thiserror::Error;
 use tracing::{debug, info, instrument};
-use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Error, Debug)]
 enum IoThreadControllerError {
@@ -189,7 +188,6 @@ fn init_logging(filter: &str, style: LogStyle) {
                 .with_target(true)
                 .without_time()
                 .with_env_filter(env_filter)
-                .with_span_events(FmtSpan::NEW) // FIXME elsewhere
                 .finish();
             let _ = tracing::subscriber::set_global_default(subscriber);
         }
