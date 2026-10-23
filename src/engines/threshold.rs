@@ -532,7 +532,7 @@ impl ThresholdEngine {
         instance_id: &str,
         thread_count: u32,
         observed_iops: u64,
-        per_thread_util: f64,
+        per_thread_util: Option<f64>,
         pending: PendingValidation,
     ) -> Option<u32> {
         let (required_iops, failed) = match pending.action {
@@ -548,7 +548,7 @@ impl ThresholdEngine {
             ScaleAction::Down(_) => {
                 // Scale-down was driven by low util. If util is still low, an
                 // IOPS collapse means demand left — keep the smaller pool.
-                if per_thread_util <= self.cfg.scale_up_threshold {
+                if per_thread_util.is_none_or(|u| u <= self.cfg.scale_up_threshold) {
                     return None;
                 }
                 let required =
@@ -735,8 +735,9 @@ impl ScalingEngine for ThresholdEngine {
                 status.throttled_usec_delta > 0,
             )
         };
-        let down_target =
-            self.scale_down_target(per_thread_util, thread_count, context.min_thread_count);
+        let down_target = per_thread_util.map_or(thread_count, |util| {
+            self.scale_down_target(util, thread_count, context.min_thread_count)
+        });
         let mut state = self.state.lock().await;
         let instance_state = state
             .entry(instance.id.clone())
@@ -816,7 +817,7 @@ impl ScalingEngine for ThresholdEngine {
 
         if !block_scale_up
             && thread_count < context.max_thread_count
-            && per_thread_util > self.cfg.scale_up_threshold
+            && per_thread_util.is_some_and(|u| u > self.cfg.scale_up_threshold)
         {
             if self.cfg.block_scale_up_when_cgroup_throttled && throttled_recently {
                 tracing::info!(
@@ -840,7 +841,7 @@ impl ScalingEngine for ThresholdEngine {
             };
             log_scale_up_decision(
                 instance,
-                per_thread_util,
+                per_thread_util.unwrap(),
                 thread_count,
                 target,
                 current_iops,
@@ -855,7 +856,12 @@ impl ScalingEngine for ThresholdEngine {
                 >= self.scale_down_sustain_polls(instance_state.consecutive_failed_downs)
         {
             let action = ScaleAction::Down(down_target);
-            log_scale_down_decision(instance, per_thread_util, thread_count, down_target);
+            log_scale_down_decision(
+                instance,
+                per_thread_util.unwrap(),
+                thread_count,
+                down_target,
+            );
             action
         } else {
             ScaleAction::None
@@ -964,10 +970,8 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: 1,
                 vcpu_count: 8,
                 perf: None,
-                per_thread_util: Some(0.0),
             })
         }
 
@@ -1023,7 +1027,7 @@ mod tests {
     ) {
         let mut status = instance.status.write().await;
         status.thread_count = thread_count;
-        status.per_thread_util = per_thread_util;
+        status.per_thread_util = Some(per_thread_util);
         status.perf.as_mut().unwrap().read_io_count = io_count;
     }
 
