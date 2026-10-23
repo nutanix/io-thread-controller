@@ -550,7 +550,6 @@ impl Controller {
             host_cpu_util: self.host_cpu_util,
             psi: self.psi,
             tick_index: self.tick_index,
-            scale_poll_secs: self.cfg.scale_poll_secs,
         };
         let fleet: Vec<_> = self.instances.values().cloned().collect();
         let refresh_cgroup = self.cfg.refresh_cgroup_on_each_read;
@@ -808,7 +807,7 @@ impl Controller {
                 ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
             ) {
                 instance.status.write().await.cooldown_until =
-                    Some(Instant::now() + Duration::from_secs_f64(self.cfg.cooldown_secs));
+                    Some(Instant::now() + Duration::from_secs(self.cfg.cooldown_secs));
             }
             let applied_at = Instant::now();
             self.engine
@@ -835,7 +834,7 @@ impl Controller {
                     ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
                 ) {
                     status.cooldown_until =
-                        Some(applied_at + Duration::from_secs_f64(self.cfg.cooldown_secs));
+                        Some(applied_at + Duration::from_secs(self.cfg.cooldown_secs));
                 }
                 drop(status);
                 self.engine
@@ -1088,6 +1087,14 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
 
+    #[cfg(feature = "threshold-engine")]
+    fn default_threshold_engine() -> ThresholdEngine {
+        let mut durations = Config::default().poll_period().converter();
+        let engine = ThresholdEngine::new(ThresholdConfig::default(), &mut durations).unwrap();
+        durations.finish().unwrap();
+        engine
+    }
+
     struct VcpuLimitedClient {
         target: Arc<AtomicU32>,
     }
@@ -1118,7 +1125,7 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
             vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            cooldown_secs: 0.0,
+            cooldown_secs: 0,
             ..Default::default()
         };
         let target = Arc::new(AtomicU32::new(2));
@@ -1137,11 +1144,7 @@ mod tests {
             status.vcpu_count = 4;
             status.ownership_classification = Some(true);
         }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
+        let mut controller = Controller::new(cfg, Box::new(default_threshold_engine())).unwrap();
         controller
             .instances
             .insert(instance.id.clone(), Arc::clone(&instance));
@@ -1200,7 +1203,7 @@ mod tests {
             min_thread_count: 2,
             max_thread_count: 3,
             host_cpu_scale_up_ceiling: 0.5,
-            cooldown_secs: 30.0,
+            cooldown_secs: 30,
             ..Default::default()
         };
         let target = Arc::new(AtomicU32::new(2));
@@ -1218,11 +1221,7 @@ mod tests {
             status.thread_count = 2;
             status.vcpu_count = 4;
         }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
+        let mut controller = Controller::new(cfg, Box::new(default_threshold_engine())).unwrap();
         controller.host_cpu_util = 0.5;
         controller
             .instances
@@ -1272,7 +1271,7 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
             vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            cooldown_secs: 30.0,
+            cooldown_secs: 30,
             min_thread_count: 1,
             max_thread_count: 8,
             ..Default::default()
@@ -1293,11 +1292,7 @@ mod tests {
             status.vcpu_count = 8;
             status.ownership_classification = Some(true);
         }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
+        let mut controller = Controller::new(cfg, Box::new(default_threshold_engine())).unwrap();
         controller
             .instances
             .insert(instance.id.clone(), Arc::clone(&instance));
@@ -1334,7 +1329,7 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
             vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
-            cooldown_secs: 60.0,
+            cooldown_secs: 60,
             min_thread_count: 1,
             max_thread_count: 8,
             ..Default::default()
@@ -1355,11 +1350,7 @@ mod tests {
             status.vcpu_count = 8;
             status.ownership_classification = Some(true);
         }
-        let mut controller = Controller::new(
-            cfg,
-            Box::new(ThresholdEngine::new(ThresholdConfig::default())),
-        )
-        .unwrap();
+        let mut controller = Controller::new(cfg, Box::new(default_threshold_engine())).unwrap();
         controller
             .instances
             .insert(instance.id.clone(), Arc::clone(&instance));
@@ -1419,7 +1410,7 @@ mod tests {
             vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
             ..Default::default()
         };
-        let engine = Box::new(ThresholdEngine::new(ThresholdConfig::default()));
+        let engine = Box::new(default_threshold_engine());
         let mut controller = Controller::new(cfg, engine).unwrap();
         let good_target = Arc::new(AtomicU32::new(1));
         let good = BulkClient {

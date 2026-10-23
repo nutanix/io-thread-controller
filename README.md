@@ -84,11 +84,150 @@ managed and unmanaged classifications across daemon restarts.
                 +------------------------------------------+
 ```
 
-## Configuration includes
+## Configuration
+
+The daemon reads its controller configuration from
+`/etc/io-thread-controller.json`, or from the file given with `--config`. The
+controller configuration names the scaling engine and the directories holding
+the engine and backend files: the active engine reads
+`<engine_config_dir>/<engine>.json`, and each backend reads its own file from
+`backend_config_dir`. Every file is JSON, and unknown keys are rejected so that
+misspelt settings fail loudly.
+
+If the controller file does not exist, the daemon runs with built-in defaults,
+which `--dump-config` prints. A missing engine file likewise selects the
+engine's defaults. Settings omitted from a file that does exist take the
+defaults listed below.
+
+At startup the daemon logs the effective controller, engine, and backend
+configuration, after defaults, command-line overrides, and duration rounding
+have been applied.
+
+### Includes
 
 Controller, engine, and backend JSON files may contain an `include` field. Its
 path is resolved relative to the including file, loaded recursively, and merged
 before the including file's keys are applied.
+
+### Durations
+
+Durations are integer seconds in settings ending in `_secs`. Every duration,
+including engine ones, must be a whole multiple of `scale_poll_secs`, and zero
+is allowed. Otherwise the daemon refuses to start and lists each offending
+setting with the nearest valid values. Changing only `scale_poll_secs` can
+therefore invalidate other settings.
+
+To try a new poll period without rewriting the other settings, set
+`round_up_durations` or pass `--round-up-durations`. Each offending duration is
+then rounded up to the next multiple with a warning, and the effective
+configuration logged at startup shows the rounded values.
+
+Percentages are written as numbers from 0 to 100 in settings ending in
+`_percent`.
+
+### Controller
+
+The first five settings are required when the controller file exists.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `engine` | required | Scaling engine name, e.g. `threshold`. |
+| `engine_config_dir` | required | Directory holding `<engine>.json`. |
+| `backend_config_dir` | required | Directory holding backend files, e.g. `qemu.json`. |
+| `vm_state_path` | required | VM ownership file. |
+| `scale_poll_secs` | required | Poll period in seconds; must be at least 1. |
+| `round_up_durations` | `false` | Round durations up to poll multiples instead of rejecting them. |
+| `min_thread_count` | `1` | Fewest worker threads the controller will set. |
+| `max_thread_count` | `8` | Most worker threads the controller will set. |
+| `host_cpu_scale_up_ceiling_percent` | `90` | Host CPU use that blocks scale-up; `0` disables. |
+| `cooldown_secs` | `30` | Per-VM pause after a successful scale action. |
+| `max_instances_adjusted_per_poll` | `0` | Most VMs resized per poll; `0` means no limit. |
+| `dry_run` | `false` | Log decisions without resizing pools. |
+| `enable_per_vm_status_line` | `true` | Write a status line per VM every poll. |
+| `enable_per_vm_main_log` | `false` | Send per-VM status lines to the main log instead of per-VM files. |
+| `enable_aggregate_status_line` | `true` | Write one fleet-wide status line every poll. |
+| `print_status_header` | `false` | Log a legend of the status-line fields at startup. |
+| `refresh_cgroup_on_each_read` | `false` | Re-read the VM's cgroup CPU limits on every refresh. |
+| `experimental_psi_monitoring` | `false` | Sample host pressure-stall information every poll. |
+
+Every `scale_poll_secs` the controller refreshes each VM, asks the engine for
+decisions, and applies them. The thread-count bounds are hard limits: an
+engine proposal outside `min_thread_count` and `max_thread_count`, or above the
+VM's vCPU count, is not applied. `min_thread_count` must be at least 1 and no
+greater than `max_thread_count`. When the controller file does not exist,
+`min_thread_count` defaults to 2 rather than 1.
+
+`host_cpu_scale_up_ceiling_percent` protects the host: while overall host CPU
+use is at or above it, scale-ups are blocked, but scale-downs and reverts still
+apply. `cooldown_secs` starts after every successful scale-up, scale-down, or
+revert and blocks further automatic scale-ups and scale-downs of that VM until
+it expires; reverts are never blocked by it.
+
+`max_instances_adjusted_per_poll` limits how disruptive a single poll can be.
+When more VMs need resizing, scale-downs are applied before scale-ups, and the
+remaining VMs are reconsidered on the next poll.
+
+`vm_state_path` records which VMs the controller manages and which it leaves
+to the operator, as classified by the backend when it first sees each VM. The
+default, `/run/io-thread-controller/vm-ownership.json`, survives daemon
+restarts but not a host reboot.
+
+By default each VM's status line goes to
+`/var/log/io-thread-controller/vms/<vm>.log`, together with that VM's log
+events; see [Status line](#status-line) for the format.
+`enable_per_vm_main_log` sends the status lines to the main log instead.
+
+`dry_run` and `print_status_header` can also be enabled with `--dry-run` and
+`--print-status-header`. `refresh_cgroup_on_each_read` and
+`experimental_psi_monitoring` are described under
+[Cgroup throttling](#cgroup-throttling) and
+[Experimental PSI monitoring](#experimental-psi-monitoring).
+
+### Threshold engine
+
+The threshold engine reads `threshold.json` and sizes each VM's worker pool to
+the CPU load it observes.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `scale_up_threshold_percent` | `95` | Average per-thread CPU above which a thread is added. |
+| `scale_down_sustain_secs` | `30` | How long scale-down must stay possible before it happens. |
+| `max_scale_down_step` | `0` | Most threads removed at once; `0` means no limit. |
+| `scale_up_min_gain_percent` | `5` | IOPS gain a scale-up must deliver; `0` disables the check. |
+| `scale_down_revert_drop_percent` | `5` | IOPS loss that reverts a scale-down; `0` disables the check. |
+| `scale_validation_delay_secs` | `20` | How long to measure after an action before validating it. |
+| `scale_validation_delay_per_thread_secs` | `0` | Extra validation time per thread in the new pool. |
+| `block_scale_up_when_cgroup_throttled` | `true` | Skip scale-up while the VM's cgroup is being CPU-throttled. |
+| `post_revert_up_grace_secs` | `10` | Time after a reverted scale-up during which metrics are ignored. |
+| `post_revert_up_recovery_secs` | `20` | Time after the grace period spent re-measuring IOPS. |
+| `post_revert_up_backoff_max_secs` | `300` | Cap on the post-revert hold; `0` disables backoff. |
+| `scale_down_backoff_max_secs` | `1200` | Cap on the scale-down sustain time; `0` disables backoff. |
+
+Each poll, the engine compares the pool's average per-thread CPU use with
+`scale_up_threshold_percent`. Above it, the engine proposes one more thread.
+Otherwise it works out the smallest pool that would keep the average at or
+below the threshold. If that is smaller than the current pool for
+`scale_down_sustain_secs`, the engine shrinks the pool to it, by at most
+`max_scale_down_step` threads at a time.
+
+After a successful action, the engine measures IOPS for
+`scale_validation_delay_secs`, plus `scale_validation_delay_per_thread_secs`
+for each thread in the resulting pool, which gives larger pools more time to
+settle. A scale-up is reverted unless IOPS gained at least
+`scale_up_min_gain_percent`. A scale-down is reverted when IOPS fell by more
+than `scale_down_revert_drop_percent` while CPU use is above the scale-up
+threshold; if CPU use stayed low, demand simply left, and the smaller pool is
+kept. Setting either percentage to zero disables that direction's validation.
+
+Repeated failures back off per VM. After a reverted scale-up, scale-up is
+blocked for `post_revert_up_grace_secs`, while the pool settles, plus
+`post_revert_up_recovery_secs`, while the engine measures a fresh IOPS baseline
+for the next attempt. That hold doubles with each consecutive failed scale-up,
+up to `post_revert_up_backoff_max_secs`, and scale-down remains allowed
+throughout. After a reverted scale-down, the next scale-down needs
+`scale_down_sustain_secs` of low utilisation doubled once per consecutive
+failure, up to `scale_down_backoff_max_secs`. A kept action resets its
+direction's backoff, as does an applied action in the opposite direction.
 
 ## Thread-name filtering
 
@@ -130,24 +269,6 @@ two abstractions are separate because discovery has fleet scope, while metric
 queries and thread-count changes need an independently stateful handle for each
 VM. This keeps the controller independent of libvirt, QMP, control sockets, and
 other transport details.
-
-After a successful action, the engine waits
-`scale_validation_sample_polls` complete samples. The optional
-`scale_validation_sample_polls_per_thread` setting adds that many samples for
-each thread in the resulting pool, allowing larger pools more time to settle.
-A scale-up is reverted unless IOPS gained at least
-`scale_up_min_gain_percent`; a scale-down is reverted when IOPS lost more than
-`scale_down_revert_drop_percent`. Setting either percentage to zero disables
-that direction's validation.
-
-Repeated failures back off per VM. After a reverted scale-up, scale-up is
-blocked for `post_revert_up_grace_polls` plus `post_revert_up_recovery_polls`;
-that hold doubles with each consecutive failed scale-up, up to
-`post_revert_up_backoff_max_polls`. After a reverted scale-down, the next
-scale-down needs `scale_down_sustain_polls` low-utilisation polls doubled once
-per consecutive failure, up to `scale_down_backoff_max_polls`. A kept action
-resets its direction's backoff, as does an applied action in the opposite
-direction. Setting a maximum to zero disables that direction's backoff.
 
 ## QEMU backend
 

@@ -1,14 +1,14 @@
 {
   "scale_up_threshold_percent": 95,
-  "scale_down_sustain_polls": 12,
+  "scale_down_sustain_secs": 120,
   "max_scale_down_step": 0,
   "scale_up_min_gain_percent": 5,
   "scale_down_revert_drop_percent": 3,
-  "scale_validation_sample_polls": 3,
-  "scale_validation_sample_polls_per_thread": 0,
+  "scale_validation_delay_secs": 30,
+  "scale_validation_delay_per_thread_secs": 0,
   "block_scale_up_when_cgroup_throttled": true,
-  "post_revert_up_grace_polls": 1,
-  "post_revert_up_recovery_polls": 2,
-  "post_revert_up_backoff_max_polls": 30,
-  "scale_down_backoff_max_polls": 120
+  "post_revert_up_grace_secs": 10,
+  "post_revert_up_recovery_secs": 20,
+  "post_revert_up_backoff_max_secs": 300,
+  "scale_down_backoff_max_secs": 1200
 }

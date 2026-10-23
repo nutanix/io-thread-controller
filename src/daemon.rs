@@ -22,7 +22,7 @@ use crate::{
     config::Config,
     controller::{Controller, ControllerError},
     dbus,
-    engines::{EngineError, load_registered_engine},
+    engines::ScalingEngine,
     instance::Instance,
     util::Path,
 };
@@ -31,9 +31,6 @@ use crate::{
 pub enum DaemonError {
     #[error(transparent)]
     Controller(#[from] ControllerError),
-
-    #[error(transparent)]
-    Engine(#[from] EngineError),
 
     #[error("backend watch path `{0}` is not a directory")]
     InvalidWatchPath(String),
@@ -52,7 +49,11 @@ pub enum DaemonError {
 const INOTIFY_EVENT_BUF_SIZE: usize = 32 * 1024;
 
 /// Run until SIGTERM or SIGINT.
-pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), DaemonError> {
+pub async fn run(
+    cfg: Config,
+    engine: Box<dyn ScalingEngine>,
+    backends: Vec<Box<dyn Backend>>,
+) -> Result<(), DaemonError> {
     let per_vm_destination = if cfg.enable_per_vm_status_line {
         if cfg.enable_per_vm_main_log {
             "main log".to_string()
@@ -85,7 +86,7 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
             "# aggregate line: <instances> <threads> <IOPS 1m> <IOPS 5m> <IOPS 15m>"
         );
     }
-    let engine = load_registered_engine(&cfg.engine_config_dir, &cfg.engine)?;
+    log_effective_config(&cfg, engine.as_ref(), &backends);
     let mut controller = Controller::new(cfg.clone(), engine)?;
 
     let discovered = discover_all(&backends).await;
@@ -95,7 +96,7 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
     let (dbus_tx, mut dbus_rx) = tokio::sync::mpsc::channel(1);
     let _dbus_connection = dbus::serve(dbus::Service::new(dbus_tx)).await?;
     let mut inotify_events = setup_inotify(&backends)?;
-    let mut poll = interval(Duration::from_secs_f64(cfg.scale_poll_secs));
+    let mut poll = interval(Duration::from_secs(cfg.scale_poll_secs));
     poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -124,6 +125,30 @@ pub async fn run(cfg: Config, backends: Vec<Box<dyn Backend>>) -> Result<(), Dae
         }
     }
     Ok(())
+}
+
+/// Log the configuration in use after defaults, command-line overrides, and
+/// duration rounding were applied.
+fn log_effective_config(cfg: &Config, engine: &dyn ScalingEngine, backends: &[Box<dyn Backend>]) {
+    tracing::info!(
+        target: "controller",
+        config = %serde_json::to_value(cfg).unwrap_or_default(),
+        "effective controller configuration"
+    );
+    tracing::info!(
+        target: "controller",
+        engine = engine.name(),
+        config = %engine.dump_config(),
+        "effective engine configuration"
+    );
+    for backend in backends {
+        tracing::info!(
+            target: "controller",
+            backend = backend.name(),
+            config = %backend.dump_config(),
+            "effective backend configuration"
+        );
+    }
 }
 
 /// Discover all backend inventories concurrently.
