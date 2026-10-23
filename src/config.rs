@@ -274,6 +274,27 @@ mod tests {
         validate_config(&cfg).unwrap();
     }
 
+    /// Ensure that the serde-constructed default is equivalent to the
+    /// Default::default implementation, while filling out the required serde
+    /// fields.
+    #[test]
+    fn test_config_serde_default_equivalent() {
+        let serde_cfg: Config = serde_json::from_str(
+            r#"
+{
+    "engine":"threshold",
+    "engine_config_dir":"/etc/io-thread-controller.d/engines",
+    "backend_config_dir":"/etc/io-thread-controller.d/backends",
+    "vm_state_path":"/run/io-thread-controller/vm-ownership.json",
+    "scale_poll_secs":10.0
+}"#,
+        )
+        .unwrap();
+        let default_cfg = Config::default();
+
+        assert_eq!(serde_cfg, default_cfg);
+    }
+
     proptest! {
         /// Test an abitrary config can be stored and loaded without losing
         /// any field.

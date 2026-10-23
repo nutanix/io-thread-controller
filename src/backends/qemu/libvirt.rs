@@ -513,6 +513,42 @@ mod tests {
             let parsed = parse_qmp_envelope("query", &body).unwrap();
             prop_assert_eq!(parsed.get(), payload);
         }
+
+        /// Ensure that the blockstats parsing function cannot panic on any
+        /// input.
+        #[test]
+        fn test_libvirt_blockstats_cannot_panic(payload in "\\PC*") {
+            let _ = parse_blockstats(&payload);
+        }
+
+        /// Check that the blockstats parsing function can correctly populate
+        /// an [`InstancePerfSample`] when given a single entry.
+        #[test]
+        fn test_libvirt_blockstats_parses_single_entry(
+            rd_ops: u64,
+            wr_ops: u64,
+            flush_ops: u64,
+            unmap_ops: u64,
+            rd_bytes: u64,
+            wr_bytes: u64)
+        {
+            let string = format!(r#"[{{
+    "stats": {{
+        "rd_operations":{rd_ops},
+        "wr_operations":{wr_ops},
+        "flush_operations":{flush_ops},
+        "unmap_operations":{unmap_ops},
+        "rd_bytes":{rd_bytes},
+        "wr_bytes":{wr_bytes}
+    }}
+}}]"#);
+            let parsed = parse_blockstats(&string).unwrap().unwrap();
+            assert_eq!(parsed.read_io_count, rd_ops);
+            assert_eq!(parsed.write_io_count, wr_ops);
+            assert_eq!(parsed.other_io_count, flush_ops.saturating_add(unmap_ops));
+            assert_eq!(parsed.read_bytes_total, rd_bytes);
+            assert_eq!(parsed.write_bytes_total, wr_bytes);
+        }
     }
 
     /// Test that device counters are added, with flush and unmap folded into
@@ -535,5 +571,23 @@ mod tests {
     #[test]
     fn test_libvirt_blockstats_empty_array_is_none() {
         assert!(parse_blockstats("[]").unwrap().is_none());
+    }
+
+    /// Test that a counter sum past `u64::MAX` saturates.
+    #[test]
+    fn test_libvirt_blockstats_saturates_on_overflow() {
+        let max = u64::MAX;
+        let body = format!(
+            r#"[
+                {{"stats":{{"rd_bytes":{max},"wr_bytes":{max},"rd_operations":{max},"wr_operations":{max},"flush_operations":{max},"unmap_operations":1}}}},
+                {{"stats":{{"rd_bytes":1,"wr_bytes":1,"rd_operations":1,"wr_operations":1,"flush_operations":1,"unmap_operations":{max}}}}}
+            ]"#
+        );
+        let perf = parse_blockstats(&body).unwrap().unwrap();
+        assert_eq!(perf.read_io_count, max);
+        assert_eq!(perf.write_io_count, max);
+        assert_eq!(perf.other_io_count, max);
+        assert_eq!(perf.read_bytes_total, max);
+        assert_eq!(perf.write_bytes_total, max);
     }
 }
