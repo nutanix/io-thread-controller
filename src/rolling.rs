@@ -215,20 +215,21 @@ impl RollingMetrics {
         }
         Some((io_ops, cpu_ns, wall_ns))
     }
-}
 
-/// Render 1m/5m/15m cells, using `-` until a window has a sample.
-pub fn format_1_5_15<F>(metrics: &RollingMetrics, getter: F) -> String
-where
-    F: Fn(&RollingMetrics, Duration) -> Option<u64>,
-{
-    [1, 5, 15]
-        .map(|minutes| {
-            getter(metrics, Duration::from_secs(minutes * 60))
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        })
-        .join("/")
+    /// Render 1m/5m/15m cells joined by `sep`, using `-` until a window has a
+    /// sample.
+    pub fn format_1_5_15<F>(&self, getter: F, sep: &str) -> String
+    where
+        F: Fn(&Self, Duration) -> Option<u64>,
+    {
+        [1, 5, 15]
+            .map(|minutes| {
+                getter(self, Duration::from_secs(minutes * 60))
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            })
+            .join(sep)
+    }
 }
 
 #[cfg(test)]

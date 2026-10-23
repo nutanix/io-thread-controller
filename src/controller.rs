@@ -27,7 +27,6 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
-    rolling::format_1_5_15,
     state::{StateError, VmOwnership, VmStateStore},
     util::Path,
 };
@@ -964,7 +963,7 @@ impl Controller {
                 "{} {} {}",
                 self.instances.len(),
                 total_threads,
-                format_optional_cells(aggregate)
+                format_optional_cells(aggregate, "/")
             );
         }
     }
@@ -975,21 +974,22 @@ impl Controller {
     ) -> String {
         let cpu = compute_cpu_stats(status);
         format!(
-            "status={} {}/{}/{} {} {}/{} {}/{}/{} {} {} {}",
+            "status={} {} {} {} {} {} {} {} {} {} {} {} {}",
             status.thread_count,
             status.read_iops,
             status.write_iops,
             status.other_iops,
-            format_optional_cells(iops_windows),
+            format_optional_cells(iops_windows, " "),
             status.read_bytes_per_second / 1_000_000,
             status.write_bytes_per_second / 1_000_000,
             cpu.avg_pct,
             cpu.median_pct,
             cpu.total_pct,
-            format_latency_cell(status.read_latency_us),
-            format_latency_cell(status.write_latency_us),
-            format_1_5_15(&status.rolling, |rolling, window| rolling
-                .cpu_us_per_io_over(window)),
+            format_latency_cell(status.read_latency_us, " "),
+            format_latency_cell(status.write_latency_us, " "),
+            status
+                .rolling
+                .format_1_5_15(|rolling, window| rolling.cpu_us_per_io_over(window), " "),
         )
     }
 
@@ -1019,11 +1019,11 @@ impl Controller {
             read_iops = status.read_iops,
             write_iops = status.write_iops,
             other_iops = status.other_iops,
-            iops_1_5_15m = %format_optional_cells(iops_windows),
+            iops_1_5_15m = %format_optional_cells(iops_windows, "/"),
             read_bw_mb_s = status.read_bytes_per_second / 1_000_000,
             write_bw_mb_s = status.write_bytes_per_second / 1_000_000,
-            read_latency_us = %format_latency_cell(status.read_latency_us),
-            write_latency_us = %format_latency_cell(status.write_latency_us)
+            read_latency_us = %format_latency_cell(status.read_latency_us, "/"),
+            write_latency_us = %format_latency_cell(status.write_latency_us, "/")
         );
     }
 
@@ -1157,8 +1157,9 @@ fn host_cpu_utilisation(previous: HostCpuSample, current: HostCpuSample) -> f64 
     }
 }
 
-/// Render the 1m/5m/15m cells, using `-` before a window has data.
-fn format_optional_cells(values: [Option<u64>; 3]) -> String {
+/// Render the 1m/5m/15m cells joined by `sep`, using `-` before a window has
+/// data.
+fn format_optional_cells(values: [Option<u64>; 3], sep: &str) -> String {
     values
         .into_iter()
         .map(|value| {
@@ -1167,18 +1168,20 @@ fn format_optional_cells(values: [Option<u64>; 3]) -> String {
                 .unwrap_or_else(|| "-".to_string())
         })
         .collect::<Vec<_>>()
-        .join("/")
+        .join(sep)
 }
 
-fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>) -> String {
-    latency
-        .map(|latency| {
-            format!(
-                "{}/{}/{}/{}",
-                latency.p50, latency.p95, latency.p99, latency.avg
-            )
-        })
-        .unwrap_or_else(|| "-".to_string())
+/// Render p50/p95/p99/avg latency cells joined by `sep`.
+///
+/// Missing latency still renders one `-` per cell so positional consumers see
+/// a fixed number of fields.
+fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>, sep: &str) -> String {
+    match latency {
+        Some(latency) => [latency.p50, latency.p95, latency.p99, latency.avg]
+            .map(|value| value.to_string())
+            .join(sep),
+        None => ["-"; 4].join(sep),
+    }
 }
 
 #[cfg(test)]
@@ -1638,6 +1641,26 @@ mod tests {
             1,
             SnapshotClient { threads, closed },
         ))
+    }
+
+    /// Test that the per-VM status line has a fixed number of
+    /// space-separated fields whether or not samples are available.
+    #[test]
+    fn test_per_vm_status_line_has_fixed_space_separated_fields() {
+        let mut status = InstanceStatus::default();
+        let empty = Controller::format_instance_status_line(&status, [None; 3]);
+        status.read_latency_us = Some(crate::instance::SnapshotLatency {
+            p50: 1,
+            p95: 2,
+            p99: 3,
+            avg: 4,
+        });
+        let full = Controller::format_instance_status_line(&status, [Some(1), Some(2), Some(3)]);
+        for line in [&empty, &full] {
+            assert!(!line.contains('/'), "{line}");
+            assert_eq!(line.split(' ').count(), 23, "{line}");
+        }
+        assert!(full.contains(" 1 2 3 4 - - - - "), "{full}");
     }
 
     /// Test that discovery sync adds new VMs, retains existing ones,
