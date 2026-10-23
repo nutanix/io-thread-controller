@@ -129,10 +129,10 @@ pub struct Instance {
     pub thread_name_filter: ThreadNameFilter,
     /// Per-VM backend implementation.
     pub client: Box<dyn InstanceClient>,
-    /// Latest snapshot shared by refresh, evaluation, and status output.
-    ///
-    /// The lock permits all VM refresh and evaluation futures to share their
-    /// records safely.
+    /// Latest raw observation returned by the backend.
+    pub snapshot: RwLock<Option<ThreadPoolSnapshot>>,
+    /// Sampling baselines, policy state, and metrics maintained by the
+    /// controller.
     pub status: RwLock<InstanceStatus>,
 }
 
@@ -189,6 +189,7 @@ impl Instance {
             pid,
             thread_name_filter: ThreadNameFilter::default(),
             client: Box::new(client),
+            snapshot: RwLock::new(None),
             status: RwLock::new(InstanceStatus {
                 scaling_allowed: true,
                 ..Default::default()
@@ -248,6 +249,9 @@ impl Instance {
             previous_cgroup
         };
         let now = Instant::now();
+        // Always acquire the raw snapshot lock before the status lock. Readers
+        // that need a coherent view use the same order.
+        let mut latest_snapshot = self.snapshot.write().await;
         let mut status = self.status.write().await;
         if let Some(cpu) = cpu.as_ref() {
             status.thread_count = cpu.thread_count;
@@ -261,8 +265,6 @@ impl Instance {
             );
         }
         Self::update_perf_rates(&mut status, &snapshot.perf, now);
-        status.vcpu_count = snapshot.vcpu_count;
-        status.perf = snapshot.perf.clone();
         status.read_latency_us = snapshot.perf.as_ref().and_then(|perf| perf.read_latency_us);
         status.write_latency_us = snapshot
             .perf
@@ -305,6 +307,7 @@ impl Instance {
             _ => 0,
         };
         status.cgroup = cgroup;
+        *latest_snapshot = Some(snapshot);
         true
     }
 
@@ -410,14 +413,12 @@ pub struct CgroupSample {
 /// Most recent mutable state for one VM.
 #[derive(Debug, Default, Clone)]
 pub struct InstanceStatus {
-    /// Current backend worker count.
+    /// Current worker count
     pub thread_count: u32,
-    /// Current backend-reported vCPU count.
-    pub vcpu_count: u32,
     /// Whether the last refresh succeeded.
     pub alive: bool,
     /// Whether backend ownership policy permits automatic scaling.
-    /// FIXME this was removed no back again?
+    // FIXME this was removed no back again?
     pub scaling_allowed: bool,
     /// Persisted ownership classification, or `None` before the first usable
     /// snapshot of a previously unknown VM.
@@ -428,11 +429,6 @@ pub struct InstanceStatus {
     ///
     /// The override is deliberately cleared when the daemon restarts.
     pub manual_scaling_sticky: bool,
-    /// Latest backend performance counters, [`None`] if the backend didn't
-    /// provide any.
-    pub perf: Option<InstancePerfSample>,
-    /// Latest average CPU utilisation per backend task, from 0.0 to 1.0.
-    pub per_thread_util: f64,
     /// Previous cumulative CPU sample used to compute a delta.
     pub last_cpu_sample: Option<CpuSample>,
     /// Latest comparable utilisation fraction for each sampled worker.
@@ -560,7 +556,7 @@ impl InstancePerfSample {
     }
 }
 
-/// One backend snapshot consumed by the controller and engine.
+/// One raw backend snapshot consumed by the controller.
 #[derive(Debug, Clone)]
 pub struct ThreadPoolSnapshot {
     /// Current backend-reported vCPU count.
@@ -587,11 +583,6 @@ fn update_worker_utilisation(status: &mut InstanceStatus, worker_util: Vec<(Stri
     }
 
     status.per_worker_util = worker_util.into_iter().map(|(_, util)| util).collect();
-    status.per_thread_util = if status.per_worker_util.is_empty() {
-        0.0
-    } else {
-        status.per_worker_util.iter().sum::<f64>() / status.per_worker_util.len() as f64
-    };
 }
 
 /// Match task counters by TID and convert deltas to utilisation fractions.
@@ -785,9 +776,11 @@ mod tests {
     async fn test_instance_refresh_state_applies_successful_snapshot() {
         let instance = Instance::new("vm-ok".to_string(), Path::new(""), 7, SnapshotClient);
         assert!(instance.refresh_state(false).await);
-        let status = instance.status.read().await;
-        assert!(status.alive);
-        assert_eq!(status.vcpu_count, 2);
+        assert!(instance.status.read().await.alive);
+        assert_eq!(
+            instance.snapshot.read().await.as_ref().unwrap().vcpu_count,
+            2
+        );
     }
 
     /// Test that client errors mark the instance dead and close the
@@ -804,8 +797,7 @@ mod tests {
             },
         );
         assert!(!instance.refresh_state(false).await);
-        let status = instance.status.read().await;
-        assert!(!status.alive);
+        assert!(!instance.status.read().await.alive);
         assert!(closed.load(Ordering::Relaxed));
     }
 
