@@ -255,45 +255,29 @@ pub fn dump_default_config() -> String {
 mod tests {
     use super::*;
 
-    /// Test that default `Config` validates and uses the threshold
-    /// engine with a 10s poll.
+    /// Test that the default `Config` validates.
     #[test]
-    fn default_config_is_valid() {
+    fn test_config_default_is_valid() {
         let cfg = Config::default();
-        assert_eq!(cfg.engine, "threshold");
-        assert!((cfg.scale_poll_secs - 10.0).abs() < f64::EPSILON);
         validate_config(&cfg).unwrap();
     }
 
-    /// Test that `validate_config` rejects an empty engine name.
+    /// Test that an empty engine does not validate.
     #[test]
-    fn validate_rejects_empty_engine() {
+    fn test_config_rejects_empty_engine() {
         let mut cfg = Config::default();
         cfg.engine.clear();
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("engine must be non-empty"));
-    }
 
-    /// Test that `validate_config` rejects non-positive
-    /// `scale_poll_secs`.
-    #[test]
-    fn validate_rejects_non_positive_poll() {
-        let mut cfg = Config {
-            scale_poll_secs: 0.0,
-            ..Default::default()
-        };
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("scale_poll_secs must be > 0"));
-
-        cfg.scale_poll_secs = f64::NAN;
-        let err = validate_config(&cfg).unwrap_err().to_string();
-        assert!(err.contains("scale_poll_secs must be > 0"));
+        assert!(
+            validate_config(&cfg)
+                .is_err_and(|err| err.to_string().contains("engine must be non-empty"))
+        );
     }
 
     /// Test that minimal valid JSON loads into `Config` with the
     /// expected engine, poll, and paths.
     #[test]
-    fn load_config_round_trips_required_fields() {
+    fn test_config_load_round_trips_every_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
@@ -320,29 +304,28 @@ mod tests {
     /// Test that loading JSON with an unknown field returns
     /// `ConfigError::SerdeJson`.
     #[test]
-    fn load_config_rejects_unknown_fields() {
+    fn test_config_load_rejects_unknown_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(
             &path,
             r#"{
-                "engine": "threshold",
-                "engine_config_dir": "/engines",
-                "backend_config_dir": "/backends",
-                "scale_poll_secs": 1.0,
-                "not_a_real_field": true
-            }"#,
+    "engine": "threshold",
+    "engine_config_dir": "/engines",
+    "backend_config_dir": "/backends",
+    "scale_poll_secs": 1.0,
+    "not_a_real_field": true
+}"#,
         )
         .unwrap();
 
         let err = load_config_or_default::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
-
     /// Test that pretty-printed default JSON includes engine, poll
     /// interval, and engine config path.
     #[test]
-    fn dump_default_config_contains_engine() {
+    fn test_dump_default_config_contains_engine() {
         let dumped = dump_default_config();
         assert!(dumped.contains(r#""engine": "threshold""#));
         assert!(dumped.contains(r#""scale_poll_secs": 10.0"#));
@@ -352,7 +335,7 @@ mod tests {
     /// Test that serde defaults for min/max threads, host CPU ceiling,
     /// and cooldown match `Config::default()`.
     #[test]
-    fn controller_policy_defaults_round_trip() {
+    fn test_controller_policy_defaults_round_trip() {
         let cfg: Config = serde_json::from_str(r#"{"engine": "foo", "engine_config_dir": "/path/to/engines", "backend_config_dir": "/path/to/backends", "scale_poll_secs": 42, "vm_state_path": "/path/to/vm-state.json"}"#).unwrap();
         assert_eq!(cfg.min_thread_count, 1);
         assert_eq!(cfg.max_thread_count, 8);

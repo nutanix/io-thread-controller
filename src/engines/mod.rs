@@ -289,7 +289,7 @@ mod tests {
     /// Test that `ScaleAction::target`/`Display` cover None/Up/Down
     /// variants.
     #[test]
-    fn scale_action_target_and_display() {
+    fn test_scale_action_target_and_display() {
         assert_eq!(ScaleAction::None.target(), None);
         assert_eq!(ScaleAction::Up(4).target(), Some(4));
         assert_eq!(ScaleAction::Down(2).target(), Some(2));
@@ -304,7 +304,7 @@ mod tests {
     /// Test that `InstanceDecision::new` stores the VM id and
     /// `ScaleAction` unchanged.
     #[test]
-    fn instance_decision_new_preserves_fields() {
+    fn test_instance_decision_new_preserves_fields() {
         let decision = InstanceDecision::new("vm-1", ScaleAction::Up(5));
         assert_eq!(decision.instance_id, "vm-1");
         assert_eq!(decision.decision, ScaleAction::Up(5));
@@ -313,7 +313,7 @@ mod tests {
     /// Test that registry loads the threshold engine by name and errors
     /// on unknown engines.
     #[test]
-    fn load_registered_engine_finds_threshold_and_rejects_unknown() {
+    fn test_load_registered_engine_finds_threshold_and_rejects_unknown() {
         let dir = Path::new("/tmp/missing-engines");
         let engine = load_registered_engine(&dir, "threshold").unwrap();
         assert_eq!(engine.name(), "threshold");
@@ -388,7 +388,7 @@ mod tests {
     /// Test that default fleet `evaluate` skips ineligible VMs and only
     /// plans eligible ones.
     #[tokio::test]
-    async fn default_fleet_evaluation_skips_ineligible_instances() {
+    async fn test_default_fleet_evaluation_skips_ineligible_instances() {
         let engine = PerInstanceEngine {
             calls: AtomicUsize::new(0),
         };
