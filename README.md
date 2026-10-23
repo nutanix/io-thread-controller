@@ -203,6 +203,10 @@ from `event=` records, and the fields are:
 
 A dash (`-`) means no sample is available for that field.
 
+The per-VM log also records `event=vm_added` when the daemon starts tracking
+the VM and `event=vm_removed reason=<not_discovered|refresh_failed>` when it
+stops.
+
 ### Aggregate line
 
 ```
