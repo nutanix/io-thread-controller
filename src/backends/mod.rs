@@ -263,7 +263,7 @@ where
             continue;
         };
         let sock_path = Path::new(&socket_dir.join(entry.path().join(socket_name)));
-        let pid = match cached_control_socket_peer_pid(&sock_path).await {
+        let pid = match control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 tracing::debug!(
@@ -320,7 +320,7 @@ static PEER_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedPeer>>> = LazyLock::new
 
 /// Return the control-socket peer PID, connecting only when the socket file
 /// or the previously identified peer process changed.
-async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
+async fn control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
     let key: &std::path::Path = sock_path;
     let metadata = tokio::fs::metadata(sock_path).await?;
     let cached = PEER_CACHE.lock().expect("lock poisoned").get(key).copied();
