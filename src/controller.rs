@@ -258,7 +258,7 @@ impl Controller {
             status.ownership_classification = classification;
             drop(status);
             self.engine.on_instance_added(&instance).await;
-            tracing::info!(target: per_vm_log::TARGET, vm = %instance.id, event = "vm_added");
+            tracing::info!(target: per_vm_log::VM, vm = %instance.id, event = "vm_added");
             self.instances.insert(instance.id.clone(), instance);
             added += 1;
         }
@@ -275,7 +275,7 @@ impl Controller {
                 instance.client.close().await;
                 self.engine.on_instance_removed(&id).await;
                 tracing::info!(
-                    target: per_vm_log::TARGET,
+                    target: per_vm_log::VM,
                     vm = %id,
                     event = "vm_removed",
                     reason = "not_discovered"
@@ -570,7 +570,7 @@ impl Controller {
             self.instances.remove(&id);
             self.engine.on_instance_removed(&id).await;
             tracing::info!(
-                target: per_vm_log::TARGET,
+                target: per_vm_log::VM,
                 vm = %id,
                 event = "vm_removed",
                 reason = "refresh_failed"
@@ -961,7 +961,7 @@ impl Controller {
         iops_windows: [Option<u64>; 3],
     ) {
         tracing::info!(
-            target: per_vm_log::TARGET,
+            target: per_vm_log::VM,
             vm = %instance.id,
             "{}",
             Self::format_instance_status_line(status, iops_windows)

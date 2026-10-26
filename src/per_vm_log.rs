@@ -7,7 +7,7 @@
 //!
 //! [`PerVmLog`] is a [`tracing_subscriber::Layer`] that appends every event
 //! carrying a `vm` field to that VM's own log file, without repeating the `vm`
-//! field. Events on [`TARGET`] belong only in these files and are filtered out
+//! field. Events on [`VM`] belong only in these files and are filtered out
 //! of the main log.
 
 use std::{
@@ -32,15 +32,15 @@ use crate::util::Path;
 pub const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";
 
 /// Target for events that belong only in per-VM log files.
-pub const TARGET: &str = "per_vm";
+pub const VM: &str = "per_vm";
 
-/// Build the main log's filter from `directives`, excluding [`TARGET`].
+/// Build the main log's filter from `directives`, excluding [`VM`].
 ///
 /// Invalid directives fall back to `info`.
 pub fn main_log_filter(directives: &str) -> EnvFilter {
     EnvFilter::try_new(directives)
         .unwrap_or_else(|_| EnvFilter::new("info"))
-        .add_directive(format!("{TARGET}=off").parse().expect("valid directive"))
+        .add_directive(format!("{VM}=off").parse().expect("valid directive"))
 }
 
 /// Layer writing `vm`-tagged events to per-VM files; clones share state.
@@ -183,7 +183,7 @@ mod tests {
         log.set_dir(Some(Path::new(dir.path())));
         let subscriber = tracing_subscriber::registry().with(log.clone());
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(target: TARGET, vm = "vm-a", "status=1 2 3");
+            tracing::info!(target: VM, vm = "vm-a", "status=1 2 3");
             tracing::warn!(target: "controller", event = "scale_failed", vm = %"vm-a", target = 4, "oops");
             tracing::info!(target: "controller", event = "vm_added", vm = "vm-a");
             tracing::info!(target: "controller", "no VM here");
@@ -236,7 +236,7 @@ mod tests {
             )
             .with(log.clone().with_filter(LevelFilter::INFO));
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(target: TARGET, vm = "vm-a", "status=1");
+            tracing::info!(target: VM, vm = "vm-a", "status=1");
             tracing::warn!(target: "controller", vm = "vm-a", "refresh failed");
         });
 
@@ -254,7 +254,7 @@ mod tests {
         let log = PerVmLog::default();
         let subscriber = tracing_subscriber::registry().with(log.clone());
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(target: TARGET, vm = "vm-a", "status=1");
+            tracing::info!(target: VM, vm = "vm-a", "status=1");
         });
         assert!(log.path("vm-a").is_none());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
