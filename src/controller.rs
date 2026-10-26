@@ -267,6 +267,7 @@ impl Controller {
             status.ownership_classification = classification;
             drop(status);
             self.engine.on_instance_added(&instance).await;
+            self.log_per_vm_line(&instance.id, "event=vm_added");
             self.instances.insert(instance.id.clone(), instance);
             added += 1;
         }
@@ -282,6 +283,7 @@ impl Controller {
             if let Some(instance) = self.instances.remove(&id) {
                 instance.client.close().await;
                 self.engine.on_instance_removed(&id).await;
+                self.log_per_vm_line(&id, "event=vm_removed reason=not_discovered");
             }
         }
         Ok((added, removed))
@@ -571,6 +573,7 @@ impl Controller {
         {
             self.instances.remove(&id);
             self.engine.on_instance_removed(&id).await;
+            self.log_per_vm_line(&id, "event=vm_removed reason=refresh_failed");
             // FIXME IIUC a failed instance gets dropped but we don't call
             // close()
         }
@@ -1684,6 +1687,8 @@ mod tests {
             }),
         )
         .unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        controller.per_vm_log_dir = Path::new(log_dir.path());
         let closed = Arc::new(AtomicUsize::new(0));
 
         let first = instance("vm-a", 1, Arc::clone(&closed));
@@ -1706,6 +1711,22 @@ mod tests {
         assert!(controller.instances.is_empty());
         assert_eq!(removed.load(Ordering::Relaxed), 1);
         assert_eq!(evaluated.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            per_vm_log_events(&controller, "vm-a"),
+            ["event=vm_added", "event=vm_removed reason=not_discovered"]
+        );
+    }
+
+    /// Return the `event=` records of one VM's per-VM log, without
+    /// timestamps.
+    fn per_vm_log_events(controller: &Controller, vm: &str) -> Vec<String> {
+        std::fs::read_to_string(controller.per_vm_log_path(vm))
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once(' ').map(|(_, record)| record))
+            .filter(|record| record.starts_with("event="))
+            .map(str::to_string)
+            .collect()
     }
 
     /// Test that one tick refreshes state, runs the engine, and drops
@@ -1729,6 +1750,8 @@ mod tests {
             }),
         )
         .unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        controller.per_vm_log_dir = Path::new(log_dir.path());
 
         let closed = Arc::new(AtomicUsize::new(0));
         let ok = instance("ok", 4, Arc::clone(&closed));
@@ -1751,5 +1774,10 @@ mod tests {
         );
         assert_eq!(evaluated.load(Ordering::Relaxed), 1);
         assert_eq!(removed.load(Ordering::Relaxed), 1);
+        assert_eq!(per_vm_log_events(&controller, "ok"), ["event=vm_added"]);
+        assert_eq!(
+            per_vm_log_events(&controller, "bad"),
+            ["event=vm_added", "event=vm_removed reason=refresh_failed"]
+        );
     }
 }
