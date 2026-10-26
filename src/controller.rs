@@ -963,7 +963,7 @@ impl Controller {
                 "{} {} {}",
                 self.instances.len(),
                 total_threads,
-                format_optional_cells(aggregate, "/")
+                format_optional_cells(aggregate, " ")
             );
         }
     }
