@@ -348,7 +348,9 @@ async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
 
 /// Return the start time of `pid`, or `None` if it no longer exists.
 fn process_start_time(pid: i32) -> Option<u64> {
-    procfs::process::Process::new(pid)
+    let path = Path::new(&format!("/proc/{pid}"));
+    let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
+    procfs::process::Process::new_with_root(path)
         .and_then(|process| process.stat())
         .map(|stat| stat.starttime)
         .ok()
