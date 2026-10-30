@@ -169,25 +169,36 @@ struct ConfigEnvelope {
     rest: serde_json::Value,
 }
 
-/// Load any JSON document that opts into the `include`
-/// mechanism.  Engines call this on their own config file so
-/// site-specific overrides can live in a sibling file.
+/// Attempt to load a JSON config file. If not found, fall back on the Default
+/// implementation.
+pub fn load_config_or_default<T: for<'de> Deserialize<'de> + Default>(
+    path: impl AsRef<std::path::Path>,
+) -> Result<T, ConfigError> {
+    match load_json_with_includes(path) {
+        r @ Ok(_) => r,
+        Err(ConfigError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Default::default())
+        }
+        e @ Err(_) => e,
+    }
+}
+
+/// Load any JSON document that opts into the `include` mechanism. Engines
+/// call this on their own config file so site-specific overrides can live in a
+/// sibling file.
 pub fn load_json_with_includes<T: for<'de> Deserialize<'de>>(
-    path: impl AsRef<Path>,
+    path: impl AsRef<std::path::Path>,
 ) -> Result<T, ConfigError> {
     let path = path.as_ref();
     let value = load_config_value(path)?;
-    let out: T = serde_json::from_value(value)?;
-    Ok(out)
+    Ok(serde_json::from_value(value)?)
 }
 
-fn load_config_value(path: &Path) -> Result<serde_json::Value, ConfigError> {
+fn load_config_value(path: &std::path::Path) -> Result<serde_json::Value, ConfigError> {
     let data = std::fs::read_to_string(path)?;
     let env: ConfigEnvelope = serde_json::from_str(&data)?;
     let mut merged = if let Some(rel) = env.include {
-        let path = Path::new(".");
-        let inc_path = Path::new(&path.parent().unwrap_or_else(|| &path).join(&rel));
-        load_config_value(&inc_path)?
+        load_config_value(&path.parent().unwrap_or(path).join(&rel))?
     } else {
         serde_json::Value::Object(Default::default())
     };
@@ -297,7 +308,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg: Config = load_json_with_includes(Path::new(path.to_str().unwrap())).unwrap();
+        let cfg: Config = load_config_or_default(Path::new(path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.engine, "threshold");
         assert!((cfg.scale_poll_secs - 7.5).abs() < f64::EPSILON);
         assert_eq!(
@@ -324,7 +335,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_json_with_includes::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_config_or_default::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 
