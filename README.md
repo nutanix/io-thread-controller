@@ -143,7 +143,7 @@ The first five settings are required when the controller file exists.
 | `cooldown_secs` | `30` | Per-VM pause after a successful scale action. |
 | `max_instances_adjusted_per_poll` | `0` | Most VMs resized per poll; `0` means no limit. |
 | `dry_run` | `false` | Log decisions without resizing pools. |
-| `enable_per_vm_status_line` | `true` | Write a status line per VM every poll. |
+| `enable_per_vm_status_line` | `false` | Write a status line per VM every poll. |
 | `enable_per_vm_main_log` | `false` | Send per-VM status lines to the main log instead of per-VM files. |
 | `enable_aggregate_status_line` | `true` | Write one fleet-wide status line every poll. |
 | `print_status_header` | `false` | Log a legend of the status-line fields at startup. |
