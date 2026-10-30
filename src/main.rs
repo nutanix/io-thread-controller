@@ -5,7 +5,7 @@
 
 //! `io-thread-controller` daemon entry point.
 
-use std::io::ErrorKind;
+use std::{io::ErrorKind, process::ExitCode};
 
 use clap::{self, CommandFactory, FromArgMatches, Parser};
 use io_thread_controller::{
@@ -13,6 +13,7 @@ use io_thread_controller::{
     backends::registered_backends,
     config::{Config, ConfigError, dump_default_config, load_json_with_includes, validate_config},
     daemon::{DaemonError, VERSION, run},
+    engines::{EngineError, load_registered_engine},
     per_vm_log::{self, PER_VM_LOG_DIR, PerVmLog},
     util::Path,
 };
@@ -33,6 +34,9 @@ enum IoThreadControllerError {
 
     #[error(transparent)]
     Daemon(#[from] DaemonError),
+
+    #[error(transparent)]
+    Engine(#[from] EngineError),
 
     #[error("no backend `{0}`")]
     NoSuchBackend(String),
@@ -83,6 +87,10 @@ struct Cli {
     /// Log scaling decisions without calling set_thread_count.
     #[arg(long)]
     dry_run: bool,
+    /// Round durations that are not multiples of `scale_poll_secs` up to the
+    /// next multiple, with a warning, instead of refusing to start.
+    #[arg(long)]
+    round_up_durations: bool,
 }
 
 /// See `Cli::log_style`.
@@ -95,7 +103,17 @@ enum LogStyle {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), IoThreadControllerError> {
+async fn main() -> ExitCode {
+    match run_daemon().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_daemon() -> Result<(), IoThreadControllerError> {
     let bootstrap_cfg = Config::default();
     let bootstrap_backends = registered_backends(&bootstrap_cfg)?;
     let mut command = Cli::command();
@@ -140,13 +158,18 @@ async fn main() -> Result<(), IoThreadControllerError> {
     if cli.dry_run {
         cfg.dry_run = true;
     }
-    validate_config(&cfg)?;
+    if cli.round_up_durations {
+        cfg.round_up_durations = true;
+    }
+    let mut durations = validate_config(&mut cfg)?;
+    let engine = load_registered_engine(&cfg.engine_config_dir, &cfg.engine, &mut durations)?;
+    durations.finish()?;
     per_vm_log.set_dir(
         (cfg.enable_per_vm_status_line && !cfg.enable_per_vm_main_log)
             .then(|| Path::from(PER_VM_LOG_DIR)),
     );
     let backends = registered_backends(&cfg)?;
-    run(cfg, backends).await?;
+    run(cfg, engine, backends).await?;
     Ok(())
 }
 
