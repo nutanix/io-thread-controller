@@ -13,10 +13,12 @@ use io_thread_controller::{
     backends::registered_backends,
     config::{Config, ConfigError, dump_default_config, load_json_with_includes, validate_config},
     daemon::{DaemonError, VERSION, run},
+    per_vm_log::{self, PER_VM_LOG_DIR, PerVmLog},
     util::Path,
 };
 use thiserror::Error;
 use tracing::{debug, info, instrument};
+use tracing_subscriber::{Layer, filter::LevelFilter, fmt, layer::SubscriberExt};
 
 #[derive(Error, Debug)]
 enum IoThreadControllerError {
@@ -104,7 +106,8 @@ async fn main() -> Result<(), IoThreadControllerError> {
     }
     let matches = command.get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
-    init_logging(&cli.log_level, cli.log_style);
+    let per_vm_log = PerVmLog::default();
+    init_logging(&cli.log_level, cli.log_style, per_vm_log.clone());
 
     if cli.dump_config {
         println!("{}", dump_default_config());
@@ -138,6 +141,10 @@ async fn main() -> Result<(), IoThreadControllerError> {
         cfg.dry_run = true;
     }
     validate_config(&cfg)?;
+    per_vm_log.set_dir(
+        (cfg.enable_per_vm_status_line && !cfg.enable_per_vm_main_log)
+            .then(|| Path::from(PER_VM_LOG_DIR)),
+    );
     let backends = registered_backends(&cfg)?;
     run(cfg, backends).await?;
     Ok(())
@@ -154,7 +161,7 @@ fn load_daemon_config(path: &Path) -> Result<Config, ConfigError> {
 }
 
 /// Install the process-wide tracing subscriber.
-fn init_logging(filter: &str, style: LogStyle) {
+fn init_logging(filter: &str, style: LogStyle, per_vm_log: PerVmLog) {
     // Auto-detection: systemd sets `JOURNAL_STREAM=<dev>:<ino>`
     // on every service invocation whose stderr is journald.
     // Presence is enough; the value itself is only useful when
@@ -173,38 +180,17 @@ fn init_logging(filter: &str, style: LogStyle) {
             }
         }
     };
-    let env_filter = tracing_subscriber::EnvFilter::try_new(filter)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    // `tracing_subscriber::fmt` returns two different concrete
-    // subscriber types depending on whether `.without_time()`
-    // is chained, so we build and install each branch in its
-    // own scope rather than fighting the type system to
-    // unify them.
-    match effective_style {
-        LogStyle::Systemd => {
-            let subscriber = tracing_subscriber::fmt()
-                // Keep target so downstream routing can separate
-                // per-VM status (`status`) from controller logs.
-                .with_target(true)
-                .without_time()
-                .with_env_filter(env_filter)
-                .finish();
-            let _ = tracing::subscriber::set_global_default(subscriber);
-        }
-        LogStyle::Json => {
-            let subscriber = tracing_subscriber::fmt()
-                .json()
-                .with_target(true)
-                .with_env_filter(env_filter)
-                .finish();
-            let _ = tracing::subscriber::set_global_default(subscriber);
-        }
-        LogStyle::Human | LogStyle::Auto => {
-            let subscriber = tracing_subscriber::fmt()
-                .with_target(true)
-                .with_env_filter(env_filter)
-                .finish();
-            let _ = tracing::subscriber::set_global_default(subscriber);
-        }
-    }
+    let main_log = match effective_style {
+        // Keep target so downstream routing can separate per-VM status
+        // (`status`) from controller logs.
+        LogStyle::Systemd => fmt::layer().with_target(true).without_time().boxed(),
+        LogStyle::Json => fmt::layer().json().with_target(true).boxed(),
+        LogStyle::Human | LogStyle::Auto => fmt::layer().with_target(true).boxed(),
+    };
+    // Per-VM files have their own filter so that RUST_LOG, which configures
+    // the main log, does not drop their status records.
+    let subscriber = tracing_subscriber::registry()
+        .with(main_log.with_filter(per_vm_log::main_log_filter(filter)))
+        .with(per_vm_log.with_filter(LevelFilter::INFO));
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }

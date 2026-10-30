@@ -186,7 +186,7 @@ impl Backend for QemuBackend {
                 Ok(_) => {
                     tracing::warn!(
                         target: "qemu",
-                        %uuid,
+                        vm = %uuid,
                         "libvirt reported zero maximum vCPUs; skipping VM"
                     );
                     continue;
@@ -194,7 +194,7 @@ impl Backend for QemuBackend {
                 Err(error) => {
                     tracing::warn!(
                         target: "qemu",
-                        %uuid,
+                        vm = %uuid,
                         %error,
                         "failed to read maximum vCPU count; skipping VM"
                     );

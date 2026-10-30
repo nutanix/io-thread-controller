@@ -205,7 +205,9 @@ A dash (`-`) means no sample is available for that field.
 
 The per-VM log also records `event=vm_added` when the daemon starts tracking
 the VM and `event=vm_removed reason=<not_discovered|refresh_failed>` when it
-stops.
+stops. Every other log event that names the VM in a `vm` field, such as scaling
+decisions, blocked or failed scale operations, and backend errors, is copied to
+the VM's file as its message followed by its remaining `key=value` fields.
 
 ### Aggregate line
 
