@@ -443,9 +443,7 @@ impl Controller {
         }
 
         instance.client.set_thread_count(threads).await?;
-        let mut status = instance.status.write().await;
-        status.thread_count = threads;
-        status.manual_scaling_sticky = sticky;
+        instance.status.write().await.manual_scaling_sticky = sticky;
         Ok(())
     }
 
@@ -856,7 +854,6 @@ impl Controller {
             Ok(()) => {
                 let applied_at = Instant::now();
                 let mut status = instance.status.write().await;
-                status.thread_count = target;
                 if matches!(
                     action,
                     ScaleAction::Up(_) | ScaleAction::Down(_) | ScaleAction::Revert(_)
@@ -1225,10 +1222,8 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
                 vcpu_count: 4,
                 perf: None,
-                per_thread_util: None,
             })
         }
 
@@ -1517,10 +1512,8 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
                 vcpu_count: 16,
                 perf: None,
-                per_thread_util: Some(0.0),
             })
         }
 
@@ -1573,7 +1566,6 @@ mod tests {
     }
 
     struct SnapshotClient {
-        threads: u32,
         closed: Arc<AtomicUsize>,
     }
 
@@ -1585,11 +1577,9 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.threads,
                 // FIXME these weren't required, looked like broken due to rebase
                 vcpu_count: 2,
                 perf: None,
-                per_thread_util: None,
             })
         }
 
@@ -1647,12 +1637,12 @@ mod tests {
         }
     }
 
-    fn instance(id: &str, threads: u32, closed: Arc<AtomicUsize>) -> Arc<Instance> {
+    fn instance(id: &str, closed: Arc<AtomicUsize>) -> Arc<Instance> {
         Arc::new(Instance::new(
             id.to_string(),
             Path::new(""),
             1,
-            SnapshotClient { threads, closed },
+            SnapshotClient { closed },
         ))
     }
 
@@ -1703,7 +1693,7 @@ mod tests {
         controller.per_vm_log_dir = Path::new(log_dir.path());
         let closed = Arc::new(AtomicUsize::new(0));
 
-        let first = instance("vm-a", 1, Arc::clone(&closed));
+        let first = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller
             .sync_instances(vec![Arc::clone(&first)])
             .await
@@ -1712,7 +1702,7 @@ mod tests {
         assert_eq!(controller.instances.len(), 1);
         assert_eq!(added.load(Ordering::Relaxed), 1);
 
-        let duplicate = instance("vm-a", 9, Arc::clone(&closed));
+        let duplicate = instance("vm-a", Arc::clone(&closed));
         let (n_added, n_removed) = controller.sync_instances(vec![duplicate]).await.unwrap();
         assert_eq!((n_added, n_removed), (0, 0));
         assert_eq!(controller.instances.len(), 1);
@@ -1768,7 +1758,7 @@ mod tests {
         controller.per_vm_log_dir = Path::new(log_dir.path());
 
         let closed = Arc::new(AtomicUsize::new(0));
-        let ok = instance("ok", 4, Arc::clone(&closed));
+        let ok = instance("ok", Arc::clone(&closed));
         let bad = Arc::new(Instance::new(
             "bad".to_string(),
             Path::new(""),
@@ -1778,14 +1768,20 @@ mod tests {
         controller.sync_instances(vec![ok, bad]).await.unwrap();
         assert_eq!(added.load(Ordering::Relaxed), 2);
 
+        let task_dir = Path::new("/proc/1/task/10");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(
+            task_dir.join("stat"),
+            "10 (worker0) S 1 1 1 0 -1 0 0 0 0 0 5 3 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \
+             0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        )
+        .unwrap();
+
         controller.tick().await.unwrap();
         assert_eq!(controller.tick_index, 1);
         assert_eq!(controller.instances.len(), 1);
         assert!(controller.instances.contains_key("ok"));
-        assert_eq!(
-            controller.instances["ok"].status.read().await.thread_count,
-            4
-        );
+        assert!(controller.instances["ok"].status.read().await.thread_count > 0);
         assert_eq!(evaluated.load(Ordering::Relaxed), 1);
         assert_eq!(removed.load(Ordering::Relaxed), 1);
         assert_eq!(per_vm_log_events(&controller, "ok"), ["event=vm_added"]);

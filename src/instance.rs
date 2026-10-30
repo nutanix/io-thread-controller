@@ -230,21 +230,16 @@ impl Instance {
         snapshot: ThreadPoolSnapshot,
         refresh_cgroup: bool,
     ) -> bool {
-        let cpu = if snapshot.per_thread_util.is_none() {
-            match read_cpu_sample(self.pid, &self.thread_name_filter) {
-                Ok(sample) => Some(sample),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "controller",
-                        vm = %self.id,
-                        %error,
-                        "failed to sample backend task CPU"
-                    );
-                    None
-                }
+        let cpu = match read_cpu_sample(self.pid, &self.thread_name_filter) {
+            Ok(sample) => Some(sample),
+            Err(error) => {
+                tracing::warn!(
+                    target: "controller",
+                    %error,
+                    "failed to sample backend task CPU"
+                );
+                None
             }
-        } else {
-            None
         };
         let previous_cgroup = self.status.read().await.cgroup;
         let cgroup = if refresh_cgroup || previous_cgroup.is_none() {
@@ -254,14 +249,18 @@ impl Instance {
         };
         let now = Instant::now();
         let mut status = self.status.write().await;
-        if status.ownership_classification.is_none() {
+        if let Some(cpu) = cpu.as_ref() {
+            status.thread_count = cpu.thread_count;
+        }
+        if status.ownership_classification.is_none()
+            && let Some(cpu) = cpu.as_ref()
+        {
             status.ownership_classification = Some(
                 self.client
-                    .initial_pool_is_managed(snapshot.thread_count, snapshot.vcpu_count),
+                    .initial_pool_is_managed(cpu.thread_count, snapshot.vcpu_count),
             );
         }
         Self::update_perf_rates(&mut status, &snapshot.perf, now);
-        status.thread_count = snapshot.thread_count;
         status.vcpu_count = snapshot.vcpu_count;
         status.perf = snapshot.perf.clone();
         status.read_latency_us = snapshot.perf.as_ref().and_then(|perf| perf.read_latency_us);
@@ -274,14 +273,7 @@ impl Instance {
             .as_ref()
             .and_then(|perf| perf.per_vq_depth.clone());
         status.alive = true;
-        let backend_util = snapshot.per_thread_util.map(|util| util.clamp(0.0, 1.0));
-        if let Some(backend_util) = backend_util {
-            status.per_worker_util.clear();
-            status.last_worker_names = None;
-            status.per_thread_util = backend_util;
-        } else if let (Some(previous), Some(current)) =
-            (status.last_cpu_sample.as_ref(), cpu.as_ref())
-        {
+        if let (Some(previous), Some(current)) = (status.last_cpu_sample.as_ref(), cpu.as_ref()) {
             let wall_ticks = current
                 .sampled_at
                 .checked_duration_since(previous.sampled_at)
@@ -293,26 +285,19 @@ impl Instance {
                 update_worker_utilisation(&mut status, worker_util);
             }
         }
-        let io_ops_total = match snapshot.perf {
+        let io_ops_total = match &snapshot.perf {
             Some(perf) => perf
                 .read_io_count
                 .saturating_add(perf.write_io_count)
                 .saturating_add(perf.other_io_count),
             None => 0,
         };
-        if let Some(per_thread_util) = backend_util {
-            status.rolling.push_from_backend_util(
-                now,
-                io_ops_total,
-                per_thread_util,
-                snapshot.thread_count,
-            );
-        } else if let Some(current) = cpu.as_ref() {
+        if let Some(current) = cpu.as_ref() {
             status
                 .rolling
                 .push_from_procfs_delta(now, io_ops_total, current.cpu_ticks);
         }
-        status.last_cpu_sample = if backend_util.is_none() { cpu } else { None };
+        status.last_cpu_sample = cpu;
         status.throttled_usec_delta = match (status.cgroup, cgroup) {
             (Some(previous), Some(current)) => current
                 .throttled_usec
@@ -578,17 +563,10 @@ impl InstancePerfSample {
 /// One backend snapshot consumed by the controller and engine.
 #[derive(Debug, Clone)]
 pub struct ThreadPoolSnapshot {
-    /// Number of active I/O workers.
-    pub thread_count: u32,
     /// Current backend-reported vCPU count.
     pub vcpu_count: u32,
     /// Performance counters captured with the current worker count.
     pub perf: Option<InstancePerfSample>,
-    /// Backend-computed per-thread CPU utilisation.
-    ///
-    /// `None` asks the controller to sample the backend process through
-    /// `/proc` using [`Instance::thread_name_filter`].
-    pub per_thread_util: Option<f64>,
 }
 
 /// Store one set of per-worker utilisation samples.
@@ -765,9 +743,7 @@ mod tests {
     use super::*;
     use crate::backends::BackendClientError;
 
-    struct SnapshotClient {
-        threads: u32,
-    }
+    struct SnapshotClient;
 
     #[async_trait]
     impl InstanceClient for SnapshotClient {
@@ -777,10 +753,8 @@ mod tests {
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.threads,
                 vcpu_count: 2,
                 perf: None,
-                per_thread_util: None,
             })
         }
 
@@ -806,20 +780,14 @@ mod tests {
         }
     }
 
-    /// Test that a successful client snapshot updates
-    /// alive/thread_count state.
+    /// Test that a successful client snapshot updates liveness and raw state.
     #[tokio::test]
     async fn test_instance_refresh_state_applies_successful_snapshot() {
-        let instance = Instance::new(
-            "vm-ok".to_string(),
-            Path::new(""),
-            7,
-            SnapshotClient { threads: 3 },
-        );
+        let instance = Instance::new("vm-ok".to_string(), Path::new(""), 7, SnapshotClient);
         assert!(instance.refresh_state(false).await);
         let status = instance.status.read().await;
         assert!(status.alive);
-        assert_eq!(status.thread_count, 3);
+        assert_eq!(status.vcpu_count, 2);
     }
 
     /// Test that client errors mark the instance dead and close the
@@ -844,12 +812,7 @@ mod tests {
     /// Test that `Display` for an instance prints the bare VM id.
     #[test]
     fn test_display_trims_instance_id() {
-        let instance = Instance::new(
-            "  vm-1  ".to_string(),
-            Path::new(""),
-            1,
-            SnapshotClient { threads: 1 },
-        );
+        let instance = Instance::new("  vm-1  ".to_string(), Path::new(""), 1, SnapshotClient);
         assert_eq!(instance.to_string(), "vm-1");
     }
 
