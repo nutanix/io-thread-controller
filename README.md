@@ -4,6 +4,11 @@
 their I/O-worker state, asks the selected scaling engine for decisions, and
 keeps the live inventory synchronized with backend discovery.
 
+## Dynamic IO thread scaling in QEMU
+
+QEMU doesn't support dynamically change the number of threads,
+https://github.com/tmakatos/qemu/tree/io-thread-controller contains an AI-assisted PoC.
+
 ## Core control loop
 
 Backends and scaling engines are independent extension points around the
