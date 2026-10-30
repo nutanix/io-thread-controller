@@ -239,7 +239,7 @@ mod tests {
     /// Test that the first sample records a baseline and yields no
     /// rates yet.
     #[test]
-    fn first_sample_only_establishes_baseline() {
+    fn test_rolling_first_sample_only_establishes_baseline() {
         let mut metrics = RollingMetrics::new();
         let t0 = Instant::now();
         metrics.push_from_procfs_delta(t0, 10, 20);
@@ -248,8 +248,10 @@ mod tests {
 
     /// Test that rolling IOPS/CPU-per-IO rates use real elapsed time
     /// between samples.
+    // TODO determine if it's ok to have iops_over with a longer Duration
+    // than wall_ns.
     #[test]
-    fn rates_use_real_elapsed_time() {
+    fn test_rolling_rates_use_real_elapsed_time() {
         let mut metrics = RollingMetrics::new();
         let t0 = Instant::now();
         metrics.push_from_procfs_delta(t0, 10, 20);
@@ -264,7 +266,7 @@ mod tests {
     /// Test that a counter reset drops prior rates and starts a new
     /// baseline.
     #[test]
-    fn counter_reset_replaces_baseline() {
+    fn test_rolling_counter_reset_replaces_baseline() {
         let mut metrics = RollingMetrics::new();
         let t0 = Instant::now();
         metrics.push_from_procfs_delta(t0, 100, 100);
