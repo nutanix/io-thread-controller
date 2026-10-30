@@ -140,7 +140,13 @@ fn is_peer_disconnect_kind(kind: ErrorKind) -> bool {
     )
 }
 
-use std::{io, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    os::unix::fs::MetadataExt,
+    path::PathBuf,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 #[cfg(feature = "qemu-backend")]
 pub mod qemu;
@@ -240,6 +246,7 @@ where
         }
     };
     let mut instances = Vec::new();
+    let mut seen = HashSet::new();
     while let Some(entry) = entries.next_entry().await? {
         match entry.metadata().await {
             Ok(metadata) => {
@@ -256,9 +263,16 @@ where
             continue;
         };
         let sock_path = Path::new(&socket_dir.join(entry.path().join(socket_name)));
-        // FIXME add unit test for this function
-        let pid = match control_socket_peer_pid(&sock_path).await {
+        let pid = match cached_control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                tracing::debug!(
+                    target: "controller",
+                    vm = %id,
+                    "control socket busy; retrying on next discovery"
+                );
+                continue;
+            }
             Err(error) => {
                 if error.kind() != io::ErrorKind::NotFound {
                     // FIXME ignore ENOENT
@@ -272,10 +286,74 @@ where
                 continue;
             }
         };
+        seen.insert(sock_path.to_path_buf());
         let client = make_client(sock_path.clone());
         instances.push(Arc::new(Instance::new(id, sock_path, pid, client)));
     }
+    PEER_CACHE
+        .lock()
+        .expect("lock poisoned")
+        .retain(|path, _| !path.starts_with(socket_dir) || seen.contains(path));
     Ok(instances)
+}
+
+/// Peer process last identified behind one control socket.
+#[derive(Debug, Clone, Copy)]
+struct CachedPeer {
+    /// Socket file device; a restarted backend binds a new socket file.
+    dev: u64,
+    /// Socket file inode.
+    ino: u64,
+    /// Peer process ID.
+    pid: i32,
+    /// Peer process start time, guarding against PID reuse.
+    start_time: u64,
+}
+
+/// Control-socket peers identified by earlier discovery passes, keyed by
+/// socket path.
+///
+/// Backends may listen with a minimal backlog, in which case connecting on
+/// every pass just to read the peer credentials fails with `EAGAIN` whenever
+/// an earlier connection has not been accepted yet.
+static PEER_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedPeer>>> = LazyLock::new(Default::default);
+
+/// Return the control-socket peer PID, connecting only when the socket file
+/// or the previously identified peer process changed.
+async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
+    let key: &std::path::Path = sock_path;
+    let metadata = tokio::fs::metadata(sock_path).await?;
+    let cached = PEER_CACHE.lock().expect("lock poisoned").get(key).copied();
+    if let Some(peer) = cached
+        && peer.dev == metadata.dev()
+        && peer.ino == metadata.ino()
+        && process_start_time(peer.pid) == Some(peer.start_time)
+    {
+        return Ok(peer.pid);
+    }
+    let pid = control_socket_peer_pid(sock_path).await?;
+    if let Some(start_time) = process_start_time(pid) {
+        PEER_CACHE.lock().expect("lock poisoned").insert(
+            key.to_path_buf(),
+            CachedPeer {
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                pid,
+                start_time,
+            },
+        );
+    }
+    Ok(pid)
+}
+
+/// Return the start time of `pid`, or `None` if it no longer exists.
+fn process_start_time(pid: i32) -> Option<u64> {
+    let path = Path::new(&format!("/proc/{pid}"));
+    let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
+    procfs::process::Process::new_with_root(path)
+        .and_then(|process| process.stat())
+        .map(|stat| stat.starttime)
+        .ok()
 }
 
 /// Return the process ID at the far end of a UNIX control socket.
@@ -287,4 +365,86 @@ async fn control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
             "control-socket peer has no process ID",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::instance::ThreadPoolSnapshot;
+
+    struct NullClient;
+
+    #[async_trait]
+    impl InstanceClient for NullClient {
+        async fn set_thread_count(&self, _count: u32) -> Result<(), BackendClientError> {
+            Ok(())
+        }
+
+        async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
+            Err(BackendClientError::NotSupported("snapshot".to_string()))
+        }
+
+        async fn close(&self) {}
+    }
+
+    async fn discover(socket_dir: &std::path::Path) -> Vec<Arc<Instance>> {
+        discover_via_control_socket(Path::new(socket_dir), "ctl", |_| {
+            Box::new(NullClient) as Box<dyn InstanceClient>
+        })
+        .await
+        .unwrap()
+    }
+
+    fn bind(path: &std::path::Path) -> UnixListener {
+        let listener = UnixListener::bind(path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        listener
+    }
+
+    /// Return how many connections are pending on `listener`.
+    fn pending(listener: &UnixListener) -> usize {
+        std::iter::from_fn(|| listener.accept().ok()).count()
+    }
+
+    /// Test that discovery identifies a control-socket peer once and does
+    /// not reconnect on later passes until the socket is rebound.
+    #[tokio::test]
+    async fn test_discovery_reuses_identified_control_socket_peer() {
+        let socket_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(socket_dir.path().join("vm-a")).unwrap();
+        let sock_path = socket_dir.path().join("vm-a").join("ctl");
+        let mut listener = bind(&sock_path);
+
+        let instances = discover(socket_dir.path()).await;
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].id, "vm-a");
+        assert_eq!(instances[0].pid, std::process::id() as i32);
+        assert_eq!(pending(&listener), 1);
+
+        assert_eq!(discover(socket_dir.path()).await.len(), 1);
+        assert_eq!(pending(&listener), 0);
+
+        // Keep the old socket inode alive while rebinding so the filesystem
+        // cannot hand the same inode number to the new socket.
+        std::fs::remove_file(&sock_path).unwrap();
+        let old_listener = std::mem::replace(&mut listener, bind(&sock_path));
+        drop(old_listener);
+        assert_eq!(discover(socket_dir.path()).await.len(), 1);
+        assert_eq!(pending(&listener), 1);
+
+        drop(listener);
+        std::fs::remove_file(&sock_path).unwrap();
+        assert!(discover(socket_dir.path()).await.is_empty());
+        assert!(
+            !PEER_CACHE
+                .lock()
+                .unwrap()
+                .keys()
+                .any(|path| path.starts_with(socket_dir.path()))
+        );
+    }
 }
