@@ -26,7 +26,7 @@ use tracing::{
 };
 use tracing_subscriber::{EnvFilter, Layer, layer::Context};
 
-use crate::util::Path;
+use crate::path::PrefixedPath;
 
 /// Default per-VM log directory.
 pub const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";
@@ -52,14 +52,14 @@ pub struct PerVmLog {
 #[derive(Default)]
 struct Inner {
     /// Destination directory; `None` disables per-VM files.
-    dir: RwLock<Option<Path>>,
+    dir: RwLock<Option<PrefixedPath>>,
     /// VM IDs for which per-VM log I/O failures were already reported.
     warned: Mutex<HashSet<String>>,
 }
 
 impl PerVmLog {
     /// Write per-VM files under `dir`, or stop writing them with `None`.
-    pub fn set_dir(&self, dir: Option<Path>) {
+    pub fn set_dir(&self, dir: Option<PrefixedPath>) {
         *self.inner.dir.write().expect("lock poisoned") = dir;
     }
 
@@ -180,7 +180,7 @@ mod tests {
     fn test_writes_vm_tagged_events_without_vm_field() {
         let dir = tempfile::tempdir().unwrap();
         let log = PerVmLog::default();
-        log.set_dir(Some(Path::new(dir.path())));
+        log.set_dir(Some(PrefixedPath::new(dir.path())));
         let subscriber = tracing_subscriber::registry().with(log.clone());
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: VM, vm = "vm-a", "status=1 2 3");
@@ -225,7 +225,7 @@ mod tests {
     fn test_per_vm_target_bypasses_main_log() {
         let dir = tempfile::tempdir().unwrap();
         let log = PerVmLog::default();
-        log.set_dir(Some(Path::new(dir.path())));
+        log.set_dir(Some(PrefixedPath::new(dir.path())));
         let main_log = Buffer::default();
         let writer = main_log.clone();
         let subscriber = tracing_subscriber::registry()

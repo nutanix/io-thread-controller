@@ -22,14 +22,14 @@ use crate::{
         ScalingEngine,
     },
     instance::Instance,
-    util::Path,
+    path::PrefixedPath,
 };
 
 /// Registry and configuration name of the threshold engine.
 pub const ENGINE_NAME: &str = "threshold";
 
 fn build_threshold_engine(
-    dir: &Path,
+    dir: &PrefixedPath,
     durations: &mut PollConverter,
 ) -> Result<Box<dyn ScalingEngine>, EngineError> {
     Ok(Box::new(ThresholdEngine::from_config_dir(dir, durations)?))
@@ -475,8 +475,11 @@ impl ThresholdEngine {
     }
 
     /// Load `threshold.json`, falling back to built-in defaults when absent.
-    pub fn from_config_dir(dir: &Path, durations: &mut PollConverter) -> Result<Self, EngineError> {
-        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
+    pub fn from_config_dir(
+        dir: &PrefixedPath,
+        durations: &mut PollConverter,
+    ) -> Result<Self, EngineError> {
+        let path = PrefixedPath::new(&dir.join(format!("{ENGINE_NAME}.json")));
         let cfg: ThresholdConfig = config::load_or_default(&path)?;
         cfg.validate()?;
         Ok(Self::new(cfg, durations)?)
@@ -925,10 +928,7 @@ mod tests {
     use rstest::{fixture, rstest};
     use test_log::test;
 
-    use super::{
-        InstanceState, PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls,
-        log_performance_revert,
-    };
+    use super::*;
     use crate::{
         backends::BackendClientError,
         config::PollPeriod,
@@ -936,7 +936,6 @@ mod tests {
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
-        util::Path,
     };
 
     #[derive(Clone)]
@@ -977,7 +976,7 @@ mod tests {
     async fn instance() -> Arc<Instance> {
         let instance = Arc::new(Instance::new(
             "vm-1".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             SnapshotClient,
         ));
@@ -1757,7 +1756,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut durations = PollPeriod::new(POLL_SECS, false).converter();
         let engine = ThresholdEngine::from_config_dir(
-            &Path::new(dir.path().to_str().unwrap()),
+            &PrefixedPath::new(dir.path().to_str().unwrap()),
             &mut durations,
         )
         .unwrap();
