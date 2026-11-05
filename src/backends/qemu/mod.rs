@@ -33,7 +33,7 @@ use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
     config::{self, ConfigError},
     instance::{Instance, InstanceClient},
-    util::Path,
+    path::PrefixedPath,
 };
 
 pub mod client;
@@ -42,7 +42,7 @@ pub mod libvirt;
 
 const BACKEND_NAME: &str = "qemu";
 
-fn build_qemu_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
+fn build_qemu_backend(dir: &PrefixedPath) -> Result<Box<dyn Backend>, BackendClientError> {
     Ok(Box::new(QemuBackend::from_config_dir(dir)?))
 }
 
@@ -81,8 +81,8 @@ impl Default for QemuConfig {
 impl QemuConfig {
     /// Read `<dir>/qemu.json` if present, otherwise return the
     /// built-in defaults.
-    pub fn from_dir(dir: &Path) -> Result<Self, ConfigError> {
-        let path = Path::new(&dir.join("qemu.json"));
+    pub fn from_dir(dir: &PrefixedPath) -> Result<Self, ConfigError> {
+        let path = PrefixedPath::new(&dir.join("qemu.json"));
         config::load_or_default(&path)
     }
 }
@@ -109,7 +109,7 @@ impl QemuBackend {
 
     /// Convenience: read `<dir>/qemu.json` (or fall back to
     /// defaults) and construct.
-    pub fn from_config_dir(dir: &Path) -> Result<Self, ConfigError> {
+    pub fn from_config_dir(dir: &PrefixedPath) -> Result<Self, ConfigError> {
         Ok(Self::new(QemuConfig::from_dir(dir)?))
     }
 
@@ -207,7 +207,7 @@ impl Backend for QemuBackend {
             // `Instance` model; for the libvirt-backed backend
             // it is purely informational (log context), so we
             // stuff the libvirt URI in there.
-            let sock_path = Path::new(&self.cfg.libvirt_uri);
+            let sock_path = PrefixedPath::new(&self.cfg.libvirt_uri);
             out.push(Arc::new(Instance::new(
                 uuid.to_string(),
                 sock_path,

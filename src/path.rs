@@ -20,11 +20,11 @@ use glob;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone)]
-pub struct Path {
+pub struct PrefixedPath {
     path: std::path::PathBuf,
 }
 
-impl Serialize for Path {
+impl Serialize for PrefixedPath {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -33,7 +33,7 @@ impl Serialize for Path {
     }
 }
 
-impl<'de> Deserialize<'de> for Path {
+impl<'de> Deserialize<'de> for PrefixedPath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -43,7 +43,7 @@ impl<'de> Deserialize<'de> for Path {
     }
 }
 
-impl Deref for Path {
+impl Deref for PrefixedPath {
     type Target = std::path::Path;
 
     fn deref(&self) -> &Self::Target {
@@ -51,19 +51,19 @@ impl Deref for Path {
     }
 }
 
-impl AsRef<Self> for Path {
+impl AsRef<Self> for PrefixedPath {
     fn as_ref(&self) -> &Self {
         self
     }
 }
 
-impl AsRef<std::path::Path> for Path {
+impl AsRef<std::path::Path> for PrefixedPath {
     fn as_ref(&self) -> &std::path::Path {
         &self.path
     }
 }
 
-impl fmt::Display for Path {
+impl fmt::Display for PrefixedPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.path.fmt(f)
     }
@@ -75,7 +75,7 @@ static IO_THREAD_CONTROLLER_ROOT_PATH: LazyLock<std::path::PathBuf> = LazyLock::
     )
 });
 
-impl Path {
+impl PrefixedPath {
     pub fn new<S>(s: &S) -> Self
     where
         S: AsRef<OsStr> + ?Sized,
@@ -92,69 +92,35 @@ impl Path {
     }
 }
 
-impl From<&str> for Path {
+impl From<&str> for PrefixedPath {
     fn from(s: &str) -> Self {
         Self::new(s)
     }
 }
 
-impl From<String> for Path {
+impl From<String> for PrefixedPath {
     fn from(s: String) -> Self {
         Self::new(&s)
     }
 }
 
-impl From<&OsStr> for Path {
+impl From<&OsStr> for PrefixedPath {
     fn from(s: &OsStr) -> Self {
         Self::new(s)
     }
 }
 
-impl From<OsString> for Path {
+impl From<OsString> for PrefixedPath {
     fn from(s: OsString) -> Self {
         Self::new(&s)
     }
 }
 
-impl FromStr for Path {
+impl FromStr for PrefixedPath {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self::new(s))
-    }
-}
-
-#[macro_export]
-macro_rules! path {
-    ( $x: ident, $p: expr) => {
-        pub static $x: std::sync::LazyLock<$crate::util::Path> =
-            std::sync::LazyLock::new(|| $crate::util::Path::new($p));
-        impl AsRef<std::path::Path> for $x {
-            fn as_ref(&self) -> &std::path::Path {
-                &self
-            }
-        }
-        impl AsRef<std::ffi::OsStr> for $x {
-            fn as_ref(&self) -> &std::ffi::OsStr {
-                self.as_os_str()
-            }
-        }
-    };
-}
-
-pub(crate) trait ProcessExt {
-    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process>;
-}
-
-impl ProcessExt for procfs::process::Process {
-    /// `/proc/<pid>` after applying [`IO_THREAD_CONTROLLER_ROOT_PATH`].
-    ///
-    /// `procfs::process::Process::new` always opens the real `/proc`. Callers
-    /// that should honor the mock root pass this to create the process.
-    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process> {
-        let path = Path::new(&format!("/proc/{pid}"));
-        let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
-        Self::new_with_root(path)
     }
 }
 
@@ -165,7 +131,7 @@ mod tests {
     /// Test that relative `Path` values are stored unchanged.
     #[test]
     fn relative_paths_are_unchanged() {
-        let path = Path::new("relative/sock");
+        let path = PrefixedPath::new("relative/sock");
         assert_eq!(path.as_os_str(), OsStr::new("relative/sock"));
     }
 
@@ -173,14 +139,14 @@ mod tests {
     /// root.
     #[test]
     fn absolute_paths_keep_absolute_form_under_default_root() {
-        let path = Path::new("/var/run/example.sock");
+        let path = PrefixedPath::new("/var/run/example.sock");
         assert_eq!(path.as_os_str(), OsStr::new("/var/run/example.sock"));
     }
 
     /// Test that `FromStr` builds a `Path` from a string.
     #[test]
     fn from_str_builds_path() {
-        let path: Path = "tmp/example".parse().unwrap();
+        let path: PrefixedPath = "tmp/example".parse().unwrap();
         assert_eq!(path.as_os_str(), OsStr::new("tmp/example"));
     }
 }

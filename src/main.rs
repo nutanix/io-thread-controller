@@ -13,8 +13,8 @@ use io_thread_controller::{
     config::{Config, ConfigError, dump_default_config, load_or_default, validate_config},
     daemon::{DaemonError, VERSION, run},
     engines::{EngineError, load_registered_engine},
+    path::PrefixedPath,
     per_vm_log::{self, PER_VM_LOG_DIR, PerVmLog},
-    util::Path,
 };
 use thiserror::Error;
 use tracing::{debug, info};
@@ -54,7 +54,7 @@ enum IoThreadControllerError {
 struct Cli {
     /// Top-level controller configuration.
     #[arg(long, default_value = "/etc/io-thread-controller.json")]
-    config: Path,
+    config: PrefixedPath,
 
     /// Print built-in defaults and exit.
     #[arg(long)]
@@ -165,7 +165,7 @@ async fn run_daemon() -> Result<(), IoThreadControllerError> {
     durations.finish()?;
     per_vm_log.set_dir(
         (cfg.enable_per_vm_status_line && !cfg.enable_per_vm_main_log)
-            .then(|| Path::from(PER_VM_LOG_DIR)),
+            .then(|| PrefixedPath::from(PER_VM_LOG_DIR)),
     );
     let backends = registered_backends(&cfg)?;
     run(cfg, engine, backends).await?;

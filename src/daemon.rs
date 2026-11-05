@@ -24,7 +24,7 @@ use crate::{
     dbus,
     engines::ScalingEngine,
     instance::Instance,
-    util::Path,
+    path::PrefixedPath,
 };
 
 #[derive(Error, Debug)]
@@ -169,7 +169,7 @@ async fn discover_all(backends: &[Box<dyn Backend>]) -> Vec<Arc<Instance>> {
 fn setup_inotify(
     backends: &[Box<dyn Backend>],
 ) -> Result<inotify::EventStream<[u8; INOTIFY_EVENT_BUF_SIZE]>, DaemonError> {
-    let paths: Vec<Path> = backends
+    let paths: Vec<PrefixedPath> = backends
         .iter()
         .flat_map(|backends| backends.watch_paths())
         .collect();

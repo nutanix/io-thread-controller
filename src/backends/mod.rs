@@ -22,7 +22,7 @@ use thiserror::Error;
 use crate::{
     config::{Config, ConfigError},
     instance::{Instance, InstanceClient, InstanceError},
-    util::Path,
+    path::PrefixedPath,
 };
 
 /// One virtio-scsi IOThread-to-virtqueue mapping.
@@ -159,7 +159,7 @@ pub struct BackendRegistration {
     /// Stable backend name used in logs and diagnostics.
     pub name: &'static str,
     /// Build the backend from `Config::backend_config_dir`.
-    pub build: fn(&Path) -> Result<Box<dyn Backend>, BackendClientError>,
+    pub build: fn(&PrefixedPath) -> Result<Box<dyn Backend>, BackendClientError>,
 }
 
 /// Linked-in backend factories. Feature-gated modules append themselves here.
@@ -180,7 +180,7 @@ pub trait Backend: Send + Sync {
     /// Inotify identifies the changed entry and event kind, but it does not
     /// describe the backend-level inventory delta. The daemon therefore uses
     /// any event only as a prompt to run a complete discovery pass.
-    fn watch_paths(&self) -> Vec<Path> {
+    fn watch_paths(&self) -> Vec<PrefixedPath> {
         Vec::new()
     }
 
@@ -224,12 +224,12 @@ pub fn registered_backends(cfg: &Config) -> Result<Vec<Box<dyn Backend>>, Backen
 /// supplied factory keeps the control protocol and concrete client
 /// backend-owned.
 pub async fn discover_via_control_socket<F>(
-    socket_dir: impl AsRef<Path>,
+    socket_dir: impl AsRef<PrefixedPath>,
     socket_name: &str,
     make_client: F,
 ) -> io::Result<Vec<Arc<Instance>>>
 where
-    F: Fn(Path) -> Box<dyn InstanceClient>,
+    F: Fn(PrefixedPath) -> Box<dyn InstanceClient>,
 {
     let socket_dir = socket_dir.as_ref();
     tracing::debug!("discovering in {}", socket_dir.display());
@@ -262,7 +262,8 @@ where
         let Ok(id) = entry.file_name().into_string() else {
             continue;
         };
-        let sock_path = Path::new(&socket_dir.join(entry.path().join(socket_name)));
+        // FIXME double prefix bug
+        let sock_path = PrefixedPath::new(&socket_dir.join(entry.path().join(socket_name)));
         let pid = match cached_control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -320,7 +321,7 @@ static PEER_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedPeer>>> = LazyLock::new
 
 /// Return the control-socket peer PID, connecting only when the socket file
 /// or the previously identified peer process changed.
-async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
+async fn cached_control_socket_peer_pid(sock_path: &PrefixedPath) -> io::Result<i32> {
     let key: &std::path::Path = sock_path;
     let metadata = tokio::fs::metadata(sock_path).await?;
     let cached = PEER_CACHE.lock().expect("lock poisoned").get(key).copied();
@@ -348,7 +349,7 @@ async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
 
 /// Return the start time of `pid`, or `None` if it no longer exists.
 fn process_start_time(pid: i32) -> Option<u64> {
-    let path = Path::new(&format!("/proc/{pid}"));
+    let path = PrefixedPath::new(&format!("/proc/{pid}"));
     let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
     procfs::process::Process::new_with_root(path)
         .and_then(|process| process.stat())
@@ -357,7 +358,7 @@ fn process_start_time(pid: i32) -> Option<u64> {
 }
 
 /// Return the process ID at the far end of a UNIX control socket.
-async fn control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
+async fn control_socket_peer_pid(sock_path: &PrefixedPath) -> io::Result<i32> {
     let stream = tokio::net::UnixStream::connect(sock_path).await?;
     stream.peer_cred()?.pid().ok_or_else(|| {
         io::Error::new(
@@ -392,7 +393,7 @@ mod tests {
     }
 
     async fn discover(socket_dir: &std::path::Path) -> Vec<Arc<Instance>> {
-        discover_via_control_socket(Path::new(socket_dir), "ctl", |_| {
+        discover_via_control_socket(PrefixedPath::new(socket_dir), "ctl", |_| {
             Box::new(NullClient) as Box<dyn InstanceClient>
         })
         .await

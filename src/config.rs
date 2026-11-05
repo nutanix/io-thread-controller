@@ -10,7 +10,7 @@ use std::{io, time::Duration};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::util::Path;
+use crate::path::PrefixedPath;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -39,14 +39,14 @@ pub struct Config {
     pub engine: String,
     /// Directory to look for `<engine>.json` engine-specific
     /// config files.
-    pub engine_config_dir: Path,
+    pub engine_config_dir: PrefixedPath,
     /// Directory containing backend-owned configuration files.
-    pub backend_config_dir: Path,
+    pub backend_config_dir: PrefixedPath,
     /// JSON file containing the managed and unmanaged VM lists.
     ///
     /// The default is below `/run`, so state survives daemon restarts but not a
     /// host reboot.
-    pub vm_state_path: Path,
+    pub vm_state_path: PrefixedPath,
     /// Lowest worker count accepted from a scaling engine.
     #[serde(default = "default_min_thread_count")]
     pub min_thread_count: u32,
@@ -235,15 +235,15 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             engine: "threshold".to_string(),
-            engine_config_dir: Path::new("/etc/io-thread-controller.d/engines"),
-            backend_config_dir: Path::new("/etc/io-thread-controller.d/backends"),
+            engine_config_dir: PrefixedPath::new("/etc/io-thread-controller.d/engines"),
+            backend_config_dir: PrefixedPath::new("/etc/io-thread-controller.d/backends"),
             scale_poll_secs: 10,
             round_up_durations: false,
             min_thread_count: 2,
             max_thread_count: 8,
             host_cpu_scale_up_ceiling: 0.9,
             cooldown_secs: default_cooldown_secs(),
-            vm_state_path: Path::new("/run/io-thread-controller/vm-ownership.json"),
+            vm_state_path: PrefixedPath::new("/run/io-thread-controller/vm-ownership.json"),
             enable_per_vm_status_line: false,
             enable_per_vm_main_log: false,
             enable_aggregate_status_line: true,
@@ -490,7 +490,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg: Config = load_or_default(Path::new(path.to_str().unwrap())).unwrap();
+        let cfg: Config = load_or_default(PrefixedPath::new(path.to_str().unwrap())).unwrap();
         assert_eq!(cfg.engine, "threshold");
         assert_eq!(cfg.scale_poll_secs, 7);
         assert_eq!(
@@ -517,7 +517,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_or_default::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_or_default::<Config>(PrefixedPath::new(path.to_str().unwrap())).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 

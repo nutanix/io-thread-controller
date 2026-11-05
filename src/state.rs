@@ -17,7 +17,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::util::Path;
+use crate::path::PrefixedPath;
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -84,12 +84,12 @@ impl VmOwnership {
 /// Atomic JSON-file store for [`VmOwnership`].
 #[derive(Debug, Clone)]
 pub struct VmStateStore {
-    path: Path,
+    path: PrefixedPath,
 }
 
 impl VmStateStore {
     /// Address the ownership registry at `path`.
-    pub fn new(path: impl AsRef<Path>) -> Self {
+    pub fn new(path: impl AsRef<PrefixedPath>) -> Self {
         Self {
             path: path.as_ref().clone(),
         }
@@ -114,7 +114,7 @@ impl VmStateStore {
     /// Atomically replace the complete ownership registry.
     pub fn save(&self, state: &VmOwnership) -> Result<(), StateError> {
         state.validate()?;
-        let path = Path::new(".");
+        let path = PrefixedPath::new(".");
         let parent = self.path.parent().unwrap_or_else(|| &path);
         std::fs::create_dir_all(parent)?;
         let tmp = self
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn ownership_round_trips_in_one_file() {
         let dir = tempfile::tempdir().unwrap();
-        let store = VmStateStore::new(Path::new(&dir.path().join("ownership.json")));
+        let store = VmStateStore::new(PrefixedPath::new(&dir.path().join("ownership.json")));
         let mut expected = VmOwnership::default();
         expected.record("managed", true).unwrap();
         expected.record("../unmanaged", false).unwrap();
@@ -152,7 +152,7 @@ mod tests {
     fn missing_state_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            VmStateStore::new(Path::new(&dir.path().join("missing.json")))
+            VmStateStore::new(PrefixedPath::new(&dir.path().join("missing.json")))
                 .load()
                 .unwrap(),
             VmOwnership::default()
@@ -170,6 +170,6 @@ mod tests {
             r#"{"managed_vms":["same"],"unmanaged_vms":["same"]}"#,
         )
         .unwrap();
-        assert!(VmStateStore::new(Path::new(&path)).load().is_err());
+        assert!(VmStateStore::new(PrefixedPath::new(&path)).load().is_err());
     }
 }
