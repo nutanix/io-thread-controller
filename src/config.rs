@@ -79,8 +79,9 @@ pub struct Config {
     /// every tick (default `false`).
     #[serde(default)]
     pub enable_per_vm_status_line: bool,
-    /// Also emit each per-VM status record on the main controller target (default `false`).
-    /// Has no effect is `enable_per_vm_status_line` is `false`.
+    /// Also emit each per-VM status record on the main controller target
+    /// (default `false`). Has no effect is `enable_per_vm_status_line` is
+    /// `false`.
     #[serde(default)]
     pub enable_per_vm_main_log: bool,
     /// Emit a single aggregate status line summarising every
