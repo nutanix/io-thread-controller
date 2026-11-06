@@ -907,4 +907,26 @@ mod tests {
             vec![("kept".to_string(), 0.25)]
         );
     }
+
+    /// Test that a short interval cannot report more than one occupied CPU.
+    #[test]
+    fn test_util_clamps_at_one() {
+        let previous = vec![task(1, "wrk", 0)];
+        let current = vec![task(1, "wrk", 250)];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![("wrk".to_string(), 1.0)]
+        );
+    }
+
+    /// Test that a repeated previous tid uses the last sample.
+    #[test]
+    fn test_util_uses_the_last_sample_for_a_repeated_tid() {
+        let previous = vec![task(1, "wrk", 0), task(1, "wrk", 40)];
+        let current = vec![task(1, "wrk", 90)];
+        assert_eq!(
+            compute_per_worker_util(&previous, &current, 100.0),
+            vec![("wrk".to_string(), 0.5)]
+        );
+    }
 }
