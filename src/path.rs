@@ -169,7 +169,7 @@ mod tests {
 
     /// Test that relative `Path` values are stored unchanged.
     #[test]
-    fn relative_paths_are_unchanged() {
+    fn test_relative_paths_are_unchanged() {
         let path = PrefixedPath::new("relative/sock");
         assert_eq!(path.as_os_str(), OsStr::new("relative/sock"));
     }
@@ -177,14 +177,14 @@ mod tests {
     /// Test that absolute `Path` values stay absolute under the default
     /// root.
     #[test]
-    fn absolute_paths_keep_absolute_form_under_default_root() {
+    fn test_absolute_paths_keep_absolute_form_under_default_root() {
         let path = PrefixedPath::new("/var/run/example.sock");
         assert_eq!(path.as_os_str(), OsStr::new("/var/run/example.sock"));
     }
 
     /// Test that `FromStr` builds a `Path` from a string.
     #[test]
-    fn from_str_builds_path() {
+    fn test_from_str_builds_path() {
         let path: PrefixedPath = "tmp/example".parse().unwrap();
         assert_eq!(path.as_os_str(), OsStr::new("tmp/example"));
     }
