@@ -90,6 +90,12 @@ impl PrefixedPath {
     pub fn glob(&self) -> glob::Paths {
         glob::glob(&self.path.to_string_lossy()).expect("valid glob pattern")
     }
+
+    pub fn join(&self, other: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            path: self.path.join(other),
+        }
+    }
 }
 
 impl From<&str> for PrefixedPath {
