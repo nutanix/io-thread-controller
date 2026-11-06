@@ -12,7 +12,23 @@ pub mod daemon;
 pub mod dbus;
 pub mod engines;
 pub mod instance;
+pub mod path;
 pub mod per_vm_log;
 pub mod rolling;
 pub mod state;
-pub mod util;
+
+pub(crate) trait ProcessExt {
+    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process>;
+}
+
+impl ProcessExt for procfs::process::Process {
+    /// `/proc/<pid>` after applying [`IO_THREAD_CONTROLLER_ROOT_PATH`].
+    ///
+    /// `procfs::process::Process::new` always opens the real `/proc`. Callers
+    /// that should honor the mock root pass this to create the process.
+    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process> {
+        let path = crate::path::PrefixedPath::new(&format!("/proc/{pid}"));
+        let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
+        Self::new_with_root(path)
+    }
+}

@@ -30,8 +30,8 @@ use rustix::param;
 use thiserror::Error;
 
 use crate::{
+    ProcessExt,
     backends::{BackendClientError, VqMapping},
-    util::ProcessExt,
 };
 
 /// Errors produced while querying or reconfiguring a QEMU vm.

@@ -27,9 +27,9 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
+    path::PrefixedPath,
     per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
-    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1011,7 +1011,7 @@ fn read_psi_sample() -> PsiSample {
 /// Read aggregate host CPU counters.
 fn read_host_cpu_sample() -> Result<HostCpuSample, ControllerError> {
     let current_si = procfs::current_system_info();
-    let total = KernelStats::from_file(Path::new("/proc/stat"), current_si)?.total;
+    let total = KernelStats::from_file(PrefixedPath::new("/proc/stat"), current_si)?.total;
 
     let idle_ticks = total.idle.saturating_add(total.iowait.unwrap_or(0));
     let total_ticks = total
@@ -1085,7 +1085,6 @@ mod tests {
         engines::{EngineTickContext, ScalingEngine},
         instance::{InstanceClient, ThreadPoolSnapshot},
         per_vm_log::PerVmLog,
-        util::Path,
     };
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -1145,14 +1144,14 @@ mod tests {
     async fn actuation_enforces_vcpu_cap() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             cooldown_secs: 0,
             ..Default::default()
         };
         let client = Arc::new(VcpuLimitedClient::new(2));
         let instance = Arc::new(Instance::new(
             "some-vcpu-limited-test-instance".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             Arc::clone(&client),
         ));
@@ -1208,7 +1207,7 @@ mod tests {
     async fn actuation_enforces_controller_bounds_and_host_ceiling() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             min_thread_count: 2,
             max_thread_count: 3,
             host_cpu_scale_up_ceiling: 0.5,
@@ -1218,7 +1217,7 @@ mod tests {
         let client = Arc::new(VcpuLimitedClient::new(2));
         let instance = Arc::new(Instance::new(
             "policy-guarded".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             Arc::clone(&client),
         ));
@@ -1278,7 +1277,7 @@ mod tests {
     async fn revert_arms_cooldown_blocking_immediate_retry() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             cooldown_secs: 30,
             min_thread_count: 1,
             max_thread_count: 8,
@@ -1287,7 +1286,7 @@ mod tests {
         let client = Arc::new(VcpuLimitedClient::new(4));
         let instance = Arc::new(Instance::new(
             "revert-cooldown".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             Arc::clone(&client),
         ));
@@ -1335,7 +1334,7 @@ mod tests {
     async fn revert_bypasses_existing_cooldown() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             cooldown_secs: 60,
             min_thread_count: 1,
             max_thread_count: 8,
@@ -1344,7 +1343,7 @@ mod tests {
         let client = Arc::new(VcpuLimitedClient::new(3));
         let instance = Arc::new(Instance::new(
             "revert-bypass".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             Arc::clone(&client),
         ));
@@ -1412,7 +1411,7 @@ mod tests {
     async fn test_set_all_attempts_every_vm_and_reports_partial_failure() {
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             ..Default::default()
         };
         let engine = Box::new(default_threshold_engine());
@@ -1427,8 +1426,18 @@ mod tests {
             fail: true,
             target: Arc::clone(&bad_target),
         };
-        let good_instance = Arc::new(Instance::new("visible".to_string(), Path::new(""), 0, good));
-        let bad_instance = Arc::new(Instance::new("hidden".to_string(), Path::new(""), 0, bad));
+        let good_instance = Arc::new(Instance::new(
+            "visible".to_string(),
+            PrefixedPath::new(""),
+            0,
+            good,
+        ));
+        let bad_instance = Arc::new(Instance::new(
+            "hidden".to_string(),
+            PrefixedPath::new(""),
+            0,
+            bad,
+        ));
         good_instance.status.write().await.vcpu_count = 16;
         bad_instance.status.write().await.vcpu_count = 16;
         controller
@@ -1527,7 +1536,7 @@ mod tests {
     fn instance(id: &str, threads: u32, closed: Arc<AtomicUsize>) -> Arc<Instance> {
         Arc::new(Instance::new(
             id.to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             1,
             SnapshotClient { threads, closed },
         ))
@@ -1562,7 +1571,7 @@ mod tests {
         let evaluated = Arc::new(AtomicUsize::new(0));
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             ..Default::default()
         };
         let mut controller = Controller::new(
@@ -1611,7 +1620,7 @@ mod tests {
     ) {
         let dir = tempfile::tempdir().unwrap();
         let per_vm_log = PerVmLog::default();
-        per_vm_log.set_dir(Some(Path::new(dir.path())));
+        per_vm_log.set_dir(Some(PrefixedPath::new(dir.path())));
         let guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(per_vm_log.clone()),
         );
@@ -1639,7 +1648,7 @@ mod tests {
         let evaluated = Arc::new(AtomicUsize::new(0));
         let state_dir = tempfile::tempdir().unwrap();
         let cfg = Config {
-            vm_state_path: Path::new(&state_dir.path().join("ownership.json")),
+            vm_state_path: PrefixedPath::new(&state_dir.path().join("ownership.json")),
             ..Default::default()
         };
         let mut controller = Controller::new(
@@ -1657,7 +1666,7 @@ mod tests {
         let ok = instance("ok", 4, Arc::clone(&closed));
         let bad = Arc::new(Instance::new(
             "bad".to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             2,
             FailingClient,
         ));

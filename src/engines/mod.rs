@@ -16,7 +16,7 @@ use crate::{
     backends::BackendClientError,
     config::{ConfigError, PollConverter},
     instance::Instance,
-    util::Path,
+    path::PrefixedPath,
 };
 
 #[cfg(feature = "threshold-engine")]
@@ -26,7 +26,7 @@ pub mod threshold;
 /// converted with the supplied converter, which reports invalid durations
 /// together with the controller's after the engine is built.
 pub type EngineBuilder =
-    fn(&Path, &mut PollConverter) -> Result<Box<dyn ScalingEngine>, EngineError>;
+    fn(&PrefixedPath, &mut PollConverter) -> Result<Box<dyn ScalingEngine>, EngineError>;
 
 /// One in-tree (or out-of-tree) engine factory registered on [`ENGINES`].
 pub struct EngineRegistration {
@@ -279,7 +279,7 @@ pub trait ScalingEngine: Send + Sync {
 
 /// Load the selected built-in engine by name.
 pub fn load_registered_engine(
-    engine_config_dir: &Path,
+    engine_config_dir: &PrefixedPath,
     name: &str,
     durations: &mut PollConverter,
 ) -> Result<Box<dyn ScalingEngine>, EngineError> {
@@ -323,7 +323,7 @@ mod tests {
     /// on unknown engines.
     #[test]
     fn load_registered_engine_finds_threshold_and_rejects_unknown() {
-        let dir = Path::new("/tmp/missing-engines");
+        let dir = PrefixedPath::new("/tmp/missing-engines");
         let mut durations = crate::config::Config::default().poll_period().converter();
         let engine = load_registered_engine(&dir, "threshold", &mut durations).unwrap();
         assert_eq!(engine.name(), "threshold");
@@ -389,7 +389,7 @@ mod tests {
     fn test_instance(id: &str) -> Arc<Instance> {
         Arc::new(Instance::new(
             id.to_string(),
-            Path::new(""),
+            PrefixedPath::new(""),
             0,
             SnapshotClient,
         ))
