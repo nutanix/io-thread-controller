@@ -169,17 +169,19 @@ impl Visit for Record {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
     use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt};
+
+    use crate::test::{MockDir, mockdir::mockdir};
 
     use super::*;
 
     /// Test that only `vm`-tagged events reach the per-VM file, rendered
     /// as message then fields and without the `vm` field.
-    #[test]
-    fn test_writes_vm_tagged_events_without_vm_field() {
-        let dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn test_writes_vm_tagged_events_without_vm_field(#[from(mockdir)] _mockdir: MockDir) {
         let log = PerVmLog::default();
-        log.set_dir(Some(PrefixedPath::new(dir.path())));
+        log.set_dir(Some(PrefixedPath::new("/")));
         let subscriber = tracing_subscriber::registry().with(log.clone());
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: VM, vm = "vm-a", "status=1 2 3");
@@ -201,7 +203,10 @@ mod tests {
                 "event=vm_added"
             ]
         );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(PrefixedPath::new("/")).unwrap().count(),
+            1
+        );
     }
 
     #[derive(Clone, Default)]
@@ -220,11 +225,10 @@ mod tests {
 
     /// Test that per-VM-only events stay out of the main log, and that the
     /// main log's level does not drop them from per-VM files.
-    #[test]
-    fn test_per_vm_target_bypasses_main_log() {
-        let dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn test_per_vm_target_bypasses_main_log(#[from(mockdir)] _mockdir: MockDir) {
         let log = PerVmLog::default();
-        log.set_dir(Some(PrefixedPath::new(dir.path())));
+        log.set_dir(Some(PrefixedPath::new("/")));
         let main_log = Buffer::default();
         let writer = main_log.clone();
         let subscriber = tracing_subscriber::registry()
@@ -247,15 +251,17 @@ mod tests {
     }
 
     /// Test that nothing is written while per-VM files are disabled.
-    #[test]
-    fn test_disabled_writes_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn test_disabled_writes_nothing(#[from(mockdir)] _mockdir: MockDir) {
         let log = PerVmLog::default();
         let subscriber = tracing_subscriber::registry().with(log.clone());
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: VM, vm = "vm-a", "status=1");
         });
         assert!(log.path("vm-a").is_none());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(PrefixedPath::new("/")).unwrap().count(),
+            0
+        );
     }
 }
