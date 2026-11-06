@@ -1,1 +1,3 @@
 /target
+/tests/component/__pycache__
+/tests/component/harness/__pycache__
