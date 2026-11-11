@@ -52,7 +52,7 @@ unit-test:
 component-test:
 	cargo build --locked --no-default-features \
 		--features threshold-engine,fake-backend,mockfs
-	python3 -m pytest tests/component
+	python3 -m pytest -n logical tests/component
 
 .PHONY: test
 test: unit-test component-test
