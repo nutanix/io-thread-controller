@@ -5,6 +5,10 @@
 
 """Fixtures for the local component-test harness."""
 
+from collections.abc import Callable, Generator
+from pathlib import Path
+from typing import Any
+
 import pytest
 from harness.common import POLL_S, built_binary
 from harness.controller import Controller
@@ -14,7 +18,7 @@ from harness.mockfs import MockProc
 
 
 @pytest.fixture
-def dbus_server(tmp_path):
+def dbus_server(tmp_path: Path) -> Generator[DBusServer, None, None]:
     """Create a new isolated DBus bus."""
     server = DBusServer(tmp_path)
     server.start()
@@ -23,7 +27,9 @@ def dbus_server(tmp_path):
 
 
 @pytest.fixture
-def mock_proc(tmp_path, dbus_server):
+def mock_proc(
+    tmp_path: Path, dbus_server: DBusServer
+) -> Generator[MockProc, None, None]:
     """Mount a mock proc at tmp_path controlled over the given bus."""
     proc = MockProc(tmp_path, built_binary("mockfsd"), dbus_server)
     yield proc
@@ -31,7 +37,9 @@ def mock_proc(tmp_path, dbus_server):
 
 
 @pytest.fixture
-def fake_backend(tmp_path, mock_proc):
+def fake_backend(
+    tmp_path: Path, mock_proc: MockProc
+) -> Generator[FakeBackend, None, None]:
     """Create a new FakeBackend running at ``tmp_path``."""
     backend = FakeBackend(tmp_path, mock_proc)
     yield backend
@@ -39,7 +47,9 @@ def fake_backend(tmp_path, mock_proc):
 
 
 @pytest.fixture
-def controller(tmp_path, fake_backend, dbus_server):
+def controller(
+    tmp_path: Path, fake_backend: FakeBackend, dbus_server: DBusServer
+) -> Generator[Controller, None, None]:
     """Start up a new `io-thread-controller`."""
     del fake_backend  # created first so the state directory exists
     launched = Controller(tmp_path, built_binary("io-thread-controller"), dbus_server)
@@ -48,7 +58,7 @@ def controller(tmp_path, fake_backend, dbus_server):
 
 
 @pytest.fixture
-def fast_threshold():
+def fast_threshold() -> dict[str, Any]:
     """Decisions land on the next eligible poll, with validation disabled."""
     return {
         "scale_up_threshold_percent": 60,
@@ -66,11 +76,11 @@ def fast_threshold():
 
 
 @pytest.fixture
-def run_controller(controller):
+def run_controller(controller: Controller) -> Callable[..., None]:
     """Start the daemon on the threshold engine."""
 
-    def start(engine_config, **overrides):
-        settings = {
+    def start(engine_config: dict[str, Any], **overrides: Any) -> None:
+        settings: dict[str, Any] = {
             "scale_poll_secs": POLL_S,
             "min_thread_count": 1,
             "max_thread_count": 8,

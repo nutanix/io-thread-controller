@@ -41,9 +41,9 @@ def _high_host_sequence() -> list[bytes]:
 def test_actuation_enforces_vcpu_cap(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """Test that a managed VM's pool stays within its vCPU count."""
     fake_backend.prepare_healthy_vm(threads=3, util=0.95, vcpu=4)
     run_controller(fast_threshold)
@@ -68,9 +68,9 @@ def test_actuation_enforces_vcpu_cap(
 def test_actuation_enforces_thread_maximum(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """Test that the controller configured maximum prevents further scale-up."""
     fake_backend.prepare_healthy_vm(threads=2, util=0.95, vcpu=8)
     run_controller(
@@ -96,9 +96,9 @@ def test_actuation_enforces_thread_maximum(
 def test_actuation_enforces_cooldown(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """
     Test that controller's cooldown prevents scale-down immediately after
     a scale-up.
@@ -128,9 +128,9 @@ def test_actuation_enforces_cooldown(
 def test_actuation_enforces_thread_minimum(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """
     Test that the controller prevents scaling below the configured minimum.
     """
@@ -159,9 +159,9 @@ def test_actuation_enforces_host_cpu_scale_up_ceiling(
     controller: Controller,
     fake_backend: FakeBackend,
     mock_proc: MockProc,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """
     Test that high host CPU usage prevents another threshold-engine scale-up.
     """
@@ -171,8 +171,9 @@ def test_actuation_enforces_host_cpu_scale_up_ceiling(
         fast_threshold, host_cpu_scale_up_ceiling_percent=50, cooldown_secs=0
     )
     wait_for(
-        lambda: controller.stats()
-        and controller.stats()["vms"][0]["per_thread_util"] > 0.6,
+        lambda: (
+            controller.stats() and controller.stats()["vms"][0]["per_thread_util"] > 0.6
+        ),
         timeout=10,
         description="procfs CPU sample while host ceiling is active",
     )
@@ -184,9 +185,9 @@ def test_actuation_enforces_host_cpu_scale_up_ceiling(
 def test_tick_refreshes_evaluates_and_drops_failed_instances(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
-):
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
+) -> None:
     """
     Test that one poll refreshes a healthy VM and drops a VM whose snapshot
     fails.
