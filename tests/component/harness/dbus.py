@@ -5,13 +5,15 @@
 
 import signal
 import subprocess
+from pathlib import Path
 
 from harness.common import wait_for
 
 
 class DBusServer:
     """Test only DBus instance."""
-    def __init__(self, root):
+
+    def __init__(self, root: Path) -> None:
         """
         Create a new DBus environment, enabling each test to have its own
         bus and ensuring isolation.
@@ -34,10 +36,10 @@ class DBusServer:
 """
             % self._socket
         )
-        self._proc = None
-        self.address = None
+        self._proc: subprocess.Popen[str] | None = None
+        self.address: str | None = None
 
-    def start(self):
+    def start(self) -> None:
         """Start the bus and wait for it to come up."""
         self._proc = subprocess.Popen(
             [
@@ -54,9 +56,10 @@ class DBusServer:
         self.address = self._proc.stdout.readline().strip()
         if not self.address:
             raise RuntimeError("dbus-daemon did not print an address")
+        assert self.address is not None
         wait_for(self._socket.exists, 5, "DBus to come up")
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the bus."""
         if self._proc is None or self._proc.poll() is not None:
             return

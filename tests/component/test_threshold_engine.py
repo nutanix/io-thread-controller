@@ -18,7 +18,7 @@ BASELINE_IO = 10_000
 
 
 @pytest.fixture
-def validating_threshold() -> Any:
+def validating_threshold() -> dict[str, Any]:
     """Same thresholds, with a hold long enough to change I/O before the sample."""
     return {
         "scale_up_threshold_percent": 60,
@@ -39,8 +39,8 @@ def _ticked(controller: Controller) -> bool:
 def test_hold_below_scale_up_threshold(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
 ) -> None:
     """Utilisation under the up threshold, and not low enough to shrink, holds."""
     fake_backend.prepare_healthy_vm(threads=2, util=0.5)
@@ -56,7 +56,9 @@ def test_hold_below_scale_up_threshold(
 
 
 def test_scale_up_one_thread(
-    fake_backend: FakeBackend, run_controller: Callable, fast_threshold: Any
+    fake_backend: FakeBackend,
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
 ) -> None:
     """A saturated worker grows by one and stops at the controller maximum."""
     fake_backend.prepare_healthy_vm(threads=1, util=0.95)
@@ -71,7 +73,9 @@ def test_scale_up_one_thread(
 
 
 def test_scale_down_one_thread(
-    fake_backend: FakeBackend, run_controller: Callable, fast_threshold: Any
+    fake_backend: FakeBackend,
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
 ) -> None:
     """Low utilisation must last for the sustain window, then drops by one step."""
     fake_backend.prepare_healthy_vm(threads=4, util=0.0)
@@ -88,8 +92,8 @@ def test_scale_down_one_thread(
 def test_scale_down_step_limit(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    fast_threshold: Any,
+    run_controller: Callable[..., None],
+    fast_threshold: dict[str, Any],
 ) -> None:
     """An idle pool sheds one thread per successful scale, not the whole surplus."""
     fake_backend.prepare_healthy_vm(threads=6, util=0.0)
@@ -107,8 +111,8 @@ def test_scale_down_step_limit(
 def test_scale_up_reverts_when_iops_rate_falls(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    validating_threshold: Any,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """A scale-up is restored when its validation-window IOPS rate falls."""
     lifetime = 10_000_000
@@ -143,7 +147,9 @@ def test_scale_up_reverts_when_iops_rate_falls(
 
 
 def test_scale_up_kept_when_io_gains(
-    fake_backend: FakeBackend, run_controller: Callable, validating_threshold: Any
+    fake_backend: FakeBackend,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """Enough extra I/O keeps the new thread and allows the next scale-up."""
     fake_backend.prepare_healthy_vm(threads=2, util=0.95, io=BASELINE_IO)
@@ -167,8 +173,8 @@ def test_scale_up_kept_when_io_gains(
 def test_scale_down_kept_when_io_keeps_rising(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    validating_threshold: Any,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """A scale-down stays when cumulative I/O keeps increasing.
 
@@ -194,8 +200,8 @@ def test_scale_down_kept_when_io_keeps_rising(
 def test_scale_down_reverts_when_iops_rate_falls(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    validating_threshold: Any,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """A collapsed IOPS rate reverts a scale-down even though the counter rises.
 
@@ -240,8 +246,8 @@ def test_scale_down_reverts_when_iops_rate_falls(
 def test_scale_up_kept_when_iops_rate_rises(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    validating_threshold: Any,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """A doubled IOPS rate keeps a scale-up even though the lifetime counter barely moves.
 
@@ -293,8 +299,8 @@ def test_scale_up_kept_when_iops_rate_rises(
 def test_scale_down_kept_when_io_holds(
     controller: Controller,
     fake_backend: FakeBackend,
-    run_controller: Callable,
-    validating_threshold: Any,
+    run_controller: Callable[..., None],
+    validating_threshold: dict[str, Any],
 ) -> None:
     """A scale-down whose I/O stays inside the drop allowance is left in place."""
     fake_backend.prepare_healthy_vm(threads=4, util=0.0, io=BASELINE_IO)
