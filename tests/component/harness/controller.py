@@ -14,6 +14,7 @@ import dbus
 import dbus.bus
 
 from harness.common import POLL_S, REPO_ROOT, physical, wait_for, write_json
+from harness.dbus import DBusServer
 from harness.fake_backend import OWNERSHIP_FILE, STATE_DIR
 
 CONFIG_FILE = "/etc/io-thread-controller.json"
@@ -27,21 +28,24 @@ CONTROLLER_INTERFACE = "com.nutanix.io_thread_controller1"
 class Controller:
     """Starts ``io-thread-controller`` against the fake backend."""
 
-    def __init__(self, root: Path, binary: Path, dbus_server: dbus.Bus):
+    def __init__(self, root: Path, binary: Path, dbus_server: DBusServer) -> None:
         """Create a new ``io-thread-controller`` on the given bus."""
         self.root = root
         self._binary = binary
         self._dbus = dbus_server
-        self._proc = None
+        self._proc: subprocess.Popen[bytes] | None = None
         self._log_path = root / "daemon.log"
         self.ownership_path = physical(root, OWNERSHIP_FILE)
 
     def __call__(
-        self, engine: str, engine_config: Any, controller_overrides: Any
+        self,
+        engine: str,
+        engine_config: dict[str, Any],
+        controller_overrides: dict[str, Any],
     ) -> None:
         """(Re)start the daemon with ``engine`` and freshly written config files."""
         self.stop()
-        config = {
+        config: dict[str, Any] = {
             "scale_poll_secs": POLL_S,
             "enable_per_vm_status_line": True,
             "enable_aggregate_status_line": True,
@@ -85,8 +89,8 @@ class Controller:
             env={
                 **os.environ,
                 "IO_THREAD_CONTROLLER_ROOT_PATH": str(self.root),
-                "DBUS_SYSTEM_BUS_ADDRESS": self._dbus.address,
-                "IO_THREAD_CONTROLLER_DBUS_ADDRESS": self._dbus.address,
+                "DBUS_SYSTEM_BUS_ADDRESS": self._dbus.address,  # type: ignore[arg-type]
+                "IO_THREAD_CONTROLLER_DBUS_ADDRESS": self._dbus.address,  # type: ignore[arg-type]
                 "RUST_LOG": "info",
             },
             stdout=log_fd,
@@ -108,6 +112,7 @@ class Controller:
     def _dbus_ready(self) -> bool:
         """Return whether the controller has claimed its bus name."""
         try:
+            assert self._dbus.address is not None
             bus = dbus.bus.BusConnection(self._dbus.address)
             return bus.name_has_owner(CONTROLLER_BUS_NAME)
         except dbus.exceptions.DBusException:
@@ -116,6 +121,7 @@ class Controller:
     def stats(self) -> Any | None:
         """Return structured controller status from the private D-Bus service."""
         try:
+            assert self._dbus.address is not None
             bus = dbus.bus.BusConnection(self._dbus.address)
             stats = bus.call_blocking(
                 CONTROLLER_BUS_NAME,
