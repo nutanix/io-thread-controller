@@ -224,16 +224,15 @@ pub fn registered_backends(cfg: &Config) -> Result<Vec<Box<dyn Backend>>, Backen
 /// supplied factory keeps the control protocol and concrete client
 /// backend-owned.
 pub async fn discover_via_control_socket<F>(
-    socket_dir: impl AsRef<PrefixedPath>,
+    socket_dir: PrefixedPath,
     socket_name: &str,
     make_client: F,
 ) -> io::Result<Vec<Arc<Instance>>>
 where
     F: Fn(PrefixedPath) -> Box<dyn InstanceClient>,
 {
-    let socket_dir = socket_dir.as_ref();
     tracing::debug!("discovering in {}", socket_dir.display());
-    let mut entries = match tokio::fs::read_dir(socket_dir).await {
+    let mut entries = match tokio::fs::read_dir(&socket_dir).await {
         Ok(entries) => entries,
         Err(error) => {
             tracing::warn!(
@@ -262,8 +261,7 @@ where
         let Ok(id) = entry.file_name().into_string() else {
             continue;
         };
-        // FIXME double prefix bug
-        let sock_path = PrefixedPath::new(&socket_dir.join(entry.path().join(socket_name)));
+        let sock_path = socket_dir.join(entry.path().join(socket_name));
         let pid = match cached_control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -294,7 +292,7 @@ where
     PEER_CACHE
         .lock()
         .expect("lock poisoned")
-        .retain(|path, _| !path.starts_with(socket_dir) || seen.contains(path));
+        .retain(|path, _| !path.starts_with(&socket_dir) || seen.contains(path));
     Ok(instances)
 }
 

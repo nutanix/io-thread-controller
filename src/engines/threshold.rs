@@ -479,7 +479,7 @@ impl ThresholdEngine {
         dir: &PrefixedPath,
         durations: &mut PollConverter,
     ) -> Result<Self, EngineError> {
-        let path = PrefixedPath::new(&dir.join(format!("{ENGINE_NAME}.json")));
+        let path = dir.join(format!("{ENGINE_NAME}.json"));
         let cfg: ThresholdConfig = config::load_or_default(&path)?;
         cfg.validate()?;
         Ok(Self::new(cfg, durations)?)
