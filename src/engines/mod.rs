@@ -240,8 +240,9 @@ pub trait ScalingEngine: Send + Sync {
         instances: &[Arc<Instance>],
         context: &EngineTickContext,
     ) -> Vec<InstanceDecision> {
-        // FIXME concurrent evaluation might not be a good idea, an engine might want
-        // to first look at all the instances first and then make decisions
+        // FIXME concurrent evaluation might not be a good idea, an engine might
+        // want to first look at all the instances first and then make
+        // decisions
         join_all(instances.iter().map(|instance| async move {
             let status = instance.status.read().await;
             let scaling_allowed = status.scaling_allowed;

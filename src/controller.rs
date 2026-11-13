@@ -770,9 +770,10 @@ impl Controller {
             );
             return Ok(false);
         }
-        // FIXME This condition allows ScaleAction::Down(...) with an increasing target
-        // to bypass the ceiling. This check should be removed or Down(...) should be
-        // blocked from having targets greater than the original.
+        // FIXME This condition allows ScaleAction::Down(...) with an increasing
+        // target to bypass the ceiling. This check should be removed or
+        // Down(...) should be blocked from having targets greater than
+        // the original.
         if target > previous_count
             && matches!(action, ScaleAction::Up(_))
             && self.cfg.host_cpu_scale_up_ceiling > 0.0
@@ -1191,8 +1192,8 @@ mod tests {
     }
 
     // FIXME This test seems like it mixes basic ScaleAction unit tests and more
-    // complex multi-tick behaviour instead of having two tests exercising different
-    // things.
+    // complex multi-tick behaviour instead of having two tests exercising
+    // different things.
     /// Test that actuation clamps thread targets to configured min/max
     /// and blocks scale-up when host CPU is above the ceiling.
     #[test(tokio::test)]
