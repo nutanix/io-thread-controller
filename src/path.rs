@@ -9,7 +9,7 @@
 use std::{
     convert::Infallible,
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fmt::{self, Debug},
     ops::Deref,
     str::FromStr,
@@ -20,11 +20,11 @@ use glob;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone)]
-pub struct PrefixedPath {
+pub struct Path {
     path: std::path::PathBuf,
 }
 
-impl Serialize for PrefixedPath {
+impl Serialize for Path {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -33,7 +33,7 @@ impl Serialize for PrefixedPath {
     }
 }
 
-impl<'de> Deserialize<'de> for PrefixedPath {
+impl<'de> Deserialize<'de> for Path {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -43,7 +43,7 @@ impl<'de> Deserialize<'de> for PrefixedPath {
     }
 }
 
-impl Deref for PrefixedPath {
+impl Deref for Path {
     type Target = std::path::Path;
 
     fn deref(&self) -> &Self::Target {
@@ -51,19 +51,19 @@ impl Deref for PrefixedPath {
     }
 }
 
-impl AsRef<Self> for PrefixedPath {
+impl AsRef<Self> for Path {
     fn as_ref(&self) -> &Self {
         self
     }
 }
 
-impl AsRef<std::path::Path> for PrefixedPath {
+impl AsRef<std::path::Path> for Path {
     fn as_ref(&self) -> &std::path::Path {
         &self.path
     }
 }
 
-impl fmt::Display for PrefixedPath {
+impl fmt::Display for Path {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.path.fmt(f)
     }
@@ -75,7 +75,7 @@ static IO_THREAD_CONTROLLER_ROOT_PATH: LazyLock<std::path::PathBuf> = LazyLock::
     )
 });
 
-impl PrefixedPath {
+impl Path {
     pub fn new<S>(s: &S) -> Self
     where
         S: AsRef<OsStr> + ?Sized,
@@ -92,31 +92,16 @@ impl PrefixedPath {
     }
 }
 
-impl From<&str> for PrefixedPath {
-    fn from(s: &str) -> Self {
-        Self::new(s)
+impl<T> From<&T> for Path
+where
+    T: AsRef<OsStr> + ?Sized,
+{
+    fn from(value: &T) -> Self {
+        Self::new(value)
     }
 }
 
-impl From<String> for PrefixedPath {
-    fn from(s: String) -> Self {
-        Self::new(&s)
-    }
-}
-
-impl From<&OsStr> for PrefixedPath {
-    fn from(s: &OsStr) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<OsString> for PrefixedPath {
-    fn from(s: OsString) -> Self {
-        Self::new(&s)
-    }
-}
-
-impl FromStr for PrefixedPath {
+impl FromStr for Path {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -131,7 +116,7 @@ mod tests {
     /// Test that relative `Path` values are stored unchanged.
     #[test]
     fn relative_paths_are_unchanged() {
-        let path = PrefixedPath::new("relative/sock");
+        let path = Path::new("relative/sock");
         assert_eq!(path.as_os_str(), OsStr::new("relative/sock"));
     }
 
@@ -139,14 +124,14 @@ mod tests {
     /// root.
     #[test]
     fn absolute_paths_keep_absolute_form_under_default_root() {
-        let path = PrefixedPath::new("/var/run/example.sock");
+        let path = Path::new("/var/run/example.sock");
         assert_eq!(path.as_os_str(), OsStr::new("/var/run/example.sock"));
     }
 
     /// Test that `FromStr` builds a `Path` from a string.
     #[test]
     fn from_str_builds_path() {
-        let path: PrefixedPath = "tmp/example".parse().unwrap();
+        let path: Path = "tmp/example".parse().unwrap();
         assert_eq!(path.as_os_str(), OsStr::new("tmp/example"));
     }
 }

@@ -27,7 +27,7 @@ impl ProcessExt for procfs::process::Process {
     /// `procfs::process::Process::new` always opens the real `/proc`. Callers
     /// that should honor the mock root pass this to create the process.
     fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process> {
-        let path = crate::path::PrefixedPath::new(&format!("/proc/{pid}"));
+        let path = crate::path::Path::new(&format!("/proc/{pid}"));
         let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
         Self::new_with_root(path)
     }

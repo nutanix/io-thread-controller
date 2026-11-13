@@ -22,14 +22,14 @@ use crate::{
         ScalingEngine,
     },
     instance::Instance,
-    path::PrefixedPath,
+    path::Path,
 };
 
 /// Registry and configuration name of the threshold engine.
 pub const ENGINE_NAME: &str = "threshold";
 
 fn build_threshold_engine(
-    dir: &PrefixedPath,
+    dir: &Path,
     durations: &mut PollConverter,
 ) -> Result<Box<dyn ScalingEngine>, EngineError> {
     Ok(Box::new(ThresholdEngine::from_config_dir(dir, durations)?))
@@ -476,10 +476,10 @@ impl ThresholdEngine {
 
     /// Load `threshold.json`, falling back to built-in defaults when absent.
     pub fn from_config_dir(
-        dir: &PrefixedPath,
+        dir: &Path,
         durations: &mut PollConverter,
     ) -> Result<Self, EngineError> {
-        let path = PrefixedPath::new(&dir.join(format!("{ENGINE_NAME}.json")));
+        let path = Path::new(&dir.join(format!("{ENGINE_NAME}.json")));
         let cfg: ThresholdConfig = config::load_or_default(&path)?;
         cfg.validate()?;
         Ok(Self::new(cfg, durations)?)
@@ -977,7 +977,7 @@ mod tests {
     async fn instance() -> Arc<Instance> {
         let instance = Arc::new(Instance::new(
             "vm-1".to_string(),
-            PrefixedPath::new(""),
+            Path::new(""),
             0,
             SnapshotClient,
         ));
@@ -1758,7 +1758,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut durations = PollPeriod::new(POLL_SECS, false).converter();
         let engine = ThresholdEngine::from_config_dir(
-            &PrefixedPath::new(dir.path().to_str().unwrap()),
+            &Path::new(dir.path().to_str().unwrap()),
             &mut durations,
         )
         .unwrap();

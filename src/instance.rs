@@ -27,7 +27,7 @@ use tokio::sync::RwLock;
 use crate::{
     ProcessExt,
     backends::{BackendClientError, IoThreadProperties, VqMapping},
-    path::PrefixedPath,
+    path::Path,
     rolling::RollingMetrics,
 };
 
@@ -123,7 +123,7 @@ pub struct Instance {
     /// Stable identifier used by inventory, logs, and engine plans.
     pub id: String,
     /// Backend-owned path or URI identifying this VM's transport.
-    pub sock_path: PrefixedPath,
+    pub sock_path: Path,
     /// Backend process ID.
     pub pid: i32,
     /// Backend-selected task names included in fallback CPU sampling.
@@ -180,7 +180,7 @@ impl Instance {
     /// client: the client handling this instance
     pub fn new(
         id: String,
-        sock_path: PrefixedPath,
+        sock_path: Path,
         pid: i32,
         client: impl InstanceClient + 'static,
     ) -> Self {
@@ -711,7 +711,7 @@ fn read_cgroup_sample(pid: i32) -> Result<CgroupSample, CgroupError> {
         .find(|entry| entry.hierarchy == 0 && entry.controllers.is_empty())
         .map(|entry| entry.pathname)
         .ok_or(CgroupError::MissingFile("cgroup path".to_string()))?;
-    let base = PrefixedPath::new(&format!("/sys/fs/cgroup{path}"));
+    let base = Path::new(&format!("/sys/fs/cgroup{path}"));
 
     let cpu_max = std::fs::read_to_string(format!("{base}/cpu.max"))?;
     let cpu_stat = std::fs::read_to_string(format!("{base}/cpu.stat"))?;
@@ -813,7 +813,7 @@ mod tests {
     async fn refresh_state_applies_successful_snapshot() {
         let instance = Instance::new(
             "vm-ok".to_string(),
-            PrefixedPath::new(""),
+            Path::new(""),
             7,
             SnapshotClient { threads: 3 },
         );
@@ -830,7 +830,7 @@ mod tests {
         let closed = Arc::new(AtomicBool::new(false));
         let instance = Instance::new(
             "vm-bad".to_string(),
-            PrefixedPath::new(""),
+            Path::new(""),
             9,
             FailingClient {
                 closed: Arc::clone(&closed),
@@ -847,7 +847,7 @@ mod tests {
     fn display_trims_instance_id() {
         let instance = Instance::new(
             "  vm-1  ".to_string(),
-            PrefixedPath::new(""),
+            Path::new(""),
             1,
             SnapshotClient { threads: 1 },
         );
