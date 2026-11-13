@@ -129,14 +129,16 @@ impl VmStateStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rstest::rstest;
 
-    /// Test that managed/unmanaged sets save and reload from a single
-    /// JSON file.
-    #[test]
-    fn ownership_round_trips_in_one_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = VmStateStore::new(PrefixedPath::new(&dir.path().join("ownership.json")));
+    use super::*;
+    use crate::test::{MockDir, mockdir::mockdir};
+
+    /// Test that managed/unmanaged sets save and reload from a single JSON
+    /// file.
+    #[rstest]
+    fn test_state_disjoint_ownership_round_trips_in_one_file(mockdir: MockDir) {
+        let store = VmStateStore::new(PrefixedPath::new("/ownership.json"));
         let mut expected = VmOwnership::default();
         expected.record("managed", true).unwrap();
         expected.record("../unmanaged", false).unwrap();
@@ -144,32 +146,29 @@ mod tests {
         store.save(&expected).unwrap();
 
         assert_eq!(store.load().unwrap(), expected);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(mockdir.root()).unwrap().count(), 1);
     }
 
     /// Test that a missing ownership file loads as empty/default state.
-    #[test]
-    fn missing_state_uses_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn test_state_uses_defaults(#[from(mockdir)] _md: MockDir) {
         assert_eq!(
-            VmStateStore::new(PrefixedPath::new(&dir.path().join("missing.json")))
+            VmStateStore::new(PrefixedPath::new("/missing.json"))
                 .load()
                 .unwrap(),
             VmOwnership::default()
         );
     }
 
-    /// Test that a VM listed as both managed and unmanaged is rejected
-    /// on load.
-    #[test]
-    fn overlapping_classifications_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ownership.json");
+    /// Test that a VM listed as both managed and unmanaged is rejected on load.
+    #[rstest]
+    fn test_state_overlapping_ownership_is_rejected(#[from(mockdir)] _md: MockDir) {
+        let path = PrefixedPath::new("/ownership.json");
         std::fs::write(
             &path,
             r#"{"managed_vms":["same"],"unmanaged_vms":["same"]}"#,
         )
         .unwrap();
-        assert!(VmStateStore::new(PrefixedPath::new(&path)).load().is_err());
+        assert!(VmStateStore::new(&path).load().is_err());
     }
 }
