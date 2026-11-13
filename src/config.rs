@@ -530,6 +530,28 @@ mod tests {
     test_round_trips!(refresh_cgroup_on_each_read in any::<bool>());
     test_round_trips!(dry_run in any::<bool>());
 
+    /// Ensure that the serde-constructed default is equivalent to the
+    /// Default::default implementation, while filling out the required serde
+    /// fields.
+    #[test]
+    #[ignore = "current fails"]
+    fn test_config_serde_default_equivalent() {
+        let serde_cfg: Config = serde_json::from_str(
+            r#"
+{
+    "engine":"threshold",
+    "engine_config_dir":"/etc/io-thread-controller.d/engines",
+    "backend_config_dir":"/etc/io-thread-controller.d/backends",
+    "vm_state_path":"/run/io-thread-controller/vm-ownership.json",
+    "scale_poll_secs":10.0
+}"#,
+        )
+        .unwrap();
+        let default_cfg = Config::default();
+
+        assert_eq!(serde_cfg, default_cfg);
+    }
+
     /// Test that loading JSON with an unknown field returns
     /// `ConfigError::SerdeJson`.
     #[rstest]

@@ -270,6 +270,18 @@ mod tests {
         /// Test that if a counter decreases or resets, then the baseline is
         /// also reset.
         #[test]
+        fn test_rolling_first_sample_leaves_the_window_empty(
+            io_ops in any::<u64>(),
+            cpu_ticks in any::<u64>(),
+        ) {
+            let mut metrics = RollingMetrics::new();
+            metrics.push_from_procfs_delta(Instant::now(), io_ops, cpu_ticks);
+            prop_assert!(metrics.is_empty());
+            prop_assert!(metrics.iops_over(Duration::from_secs(60)).is_none());
+            prop_assert!(metrics.cpu_us_per_io_over(Duration::from_secs(60)).is_none());
+        }
+
+        #[test]
         fn test_rolling_counter_reset_replaces_baseline(
             io0 in 1u64..,
             io1 in 1u64..,
@@ -286,6 +298,33 @@ mod tests {
             metrics.push_from_procfs_delta(t1, io1, cpu1);
 
             prop_assert!(metrics.is_empty());
+        }
+
+        #[test]
+        fn test_rolling_counter_reset_evicts_only_invalid_samples(
+            io0 in 1u64..,
+            io1 in 1u64..,
+            cpu0 in 1u64..,
+            cpu1 in 1u64..,
+            decrease_io: bool,
+        ) {
+            prop_assume!(io0 < io1 - 1 && cpu0 < cpu1 - 1);
+
+            let mut metrics = RollingMetrics::new();
+            let t0 = Instant::now();
+            let t1 = t0 + Duration::from_secs(2);
+            let t2 = t1 + Duration::from_secs(2);
+
+            metrics.push_from_procfs_delta(t0, io0, cpu0);
+            metrics.push_from_procfs_delta(t1, io1, cpu1);
+
+            if decrease_io {
+                metrics.push_from_procfs_delta(t2, io1 - 1, cpu1);
+            } else {
+                metrics.push_from_procfs_delta(t2, io1, cpu1 - 1);
+            }
+
+            prop_assert_eq!(metrics.len(), 1);
         }
     }
 }

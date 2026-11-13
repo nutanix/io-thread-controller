@@ -13,7 +13,7 @@ use std::{
 
 use futures_util::future::join_all;
 use procfs::{
-    CpuPressure, Current, FromReadSI, IoPressure, KernelStats, MemoryPressure, ProcError,
+    CpuPressure, FromRead, FromReadSI, IoPressure, KernelStats, MemoryPressure, ProcError,
 };
 use serde::{Deserialize, Serialize};
 use statistical::median;
@@ -997,13 +997,13 @@ impl Controller {
 /// Read CPU, I/O, and memory pressure; unavailable values become zero.
 fn read_psi_sample() -> PsiSample {
     PsiSample {
-        cpu_some_avg10: CpuPressure::current()
+        cpu_some_avg10: CpuPressure::from_file(PrefixedPath::new("/proc/pressure/cpu"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
-        io_some_avg10: IoPressure::current()
+        io_some_avg10: IoPressure::from_file(PrefixedPath::new("/proc/pressure/io"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
-        memory_some_avg10: MemoryPressure::current()
+        memory_some_avg10: MemoryPressure::from_file(PrefixedPath::new("/proc/pressure/memory"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
     }
@@ -1078,18 +1078,19 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use proptest::prelude::*;
     use rstest::rstest;
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
     use crate::{
         backends::BackendClientError,
         engines::{EngineTickContext, ScalingEngine},
-        instance::{InstanceClient, ThreadPoolSnapshot},
+        instance::{InstanceClient, InstanceStatus, ThreadPoolSnapshot},
         per_vm_log::PerVmLog,
         test::MockDir,
         test::mockdir::mockdir,
     };
-    use tracing_subscriber::layer::SubscriberExt;
 
     #[cfg(feature = "threshold-engine")]
     use crate::engines::threshold::{ThresholdConfig, ThresholdEngine};
@@ -1701,5 +1702,567 @@ mod tests {
             per_vm_log_events(&per_vm_log, "bad"),
             ["event=vm_added", "event=vm_removed reason=refresh_failed"]
         );
+    }
+
+    fn status_from_per_worker(per_worker: Vec<f64>) -> InstanceStatus {
+        InstanceStatus {
+            per_worker_util: per_worker,
+            ..Default::default()
+        }
+    }
+
+    fn status_with_fallback(
+        per_worker: Vec<f64>,
+        per_thread_util: f64,
+        thread_count: u32,
+    ) -> InstanceStatus {
+        InstanceStatus {
+            per_worker_util: per_worker,
+            per_thread_util,
+            thread_count,
+            ..Default::default()
+        }
+    }
+
+    fn status_fallback(per_thread_util: f64, thread_count: u32) -> InstanceStatus {
+        status_with_fallback(Vec::new(), per_thread_util, thread_count)
+    }
+
+    // Strategy helpers: produce finite f64 in [0,1] and small worker vecs.
+    fn util() -> impl Strategy<Value = f64> {
+        0.0f64..=1.0f64
+    }
+
+    fn per_worker_vec() -> impl Strategy<Value = Vec<f64>> {
+        prop::collection::vec(util(), 1..10)
+    }
+
+    proptest! {
+        /// Test that when per_worker_util is non-empty the fallback inputs
+        /// per_thread_util and thread_count are ignored.
+        #[test]
+        fn test_per_worker_branch_ignores_fallback(
+            per_worker in per_worker_vec(),
+            util_a in util(),
+            util_b in util(),
+            count_a in any::<u32>(),
+            count_b in any::<u32>(),
+        ) {
+            let s_a = status_with_fallback(per_worker.clone(), util_a, count_a);
+            let s_b = status_with_fallback(per_worker.clone(), util_b, count_b);
+            let a = compute_cpu_stats(&s_a);
+            let b = compute_cpu_stats(&s_b);
+            // If the fallback inputs were taken into account, `a` and `b` would
+            // differ when the fallback values are different.
+            prop_assert_eq!(a.avg_pct, b.avg_pct);
+            prop_assert_eq!(a.median_pct, b.median_pct);
+            prop_assert_eq!(a.total_pct, b.total_pct);
+        }
+
+        /// Test that when per_worker_util is empty the output depends only on
+        /// the fallback fields.
+        #[test]
+        fn test_fallback_avg_equals_median(
+            per_thread_util in util(),
+            thread_count in 0u32..32,
+        ) {
+            let s = status_fallback(per_thread_util, thread_count);
+            let stats = compute_cpu_stats(&s);
+            // Since we don't have fine-grained information, the thread
+            // utilisation is treated like a `vec![per_thread_util;
+            // thread_count]` meaning the following should hold.
+            prop_assert_eq!(stats.avg_pct, stats.median_pct);
+        }
+
+        /// Test that the order of read thread utilisations is irrelevant.
+        #[test]
+        fn test_per_worker_permutation_invariance(per_worker in per_worker_vec()) {
+            let s_orig = status_from_per_worker(per_worker.clone());
+            let mut sorted = per_worker.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let s_sorted = status_from_per_worker(sorted.clone());
+            let mut reversed = per_worker.clone();
+            reversed.reverse();
+            let s_reversed = status_from_per_worker(reversed);
+
+            let orig = compute_cpu_stats(&s_orig);
+            let sorted_stats = compute_cpu_stats(&s_sorted);
+            let reversed_stats = compute_cpu_stats(&s_reversed);
+
+            prop_assert_eq!(orig.avg_pct, sorted_stats.avg_pct);
+            prop_assert_eq!(orig.median_pct, sorted_stats.median_pct);
+            prop_assert_eq!(orig.total_pct, sorted_stats.total_pct);
+
+            prop_assert_eq!(orig.avg_pct, reversed_stats.avg_pct);
+            prop_assert_eq!(orig.median_pct, reversed_stats.median_pct);
+            prop_assert_eq!(orig.total_pct, reversed_stats.total_pct);
+        }
+
+        /// Test that for a single element vector, avg == median == total.
+        #[test]
+        fn test_single_element_all_equal(x in util()) {
+            let s = status_from_per_worker(vec![x]);
+            let stats = compute_cpu_stats(&s);
+            prop_assert_eq!(stats.avg_pct, stats.median_pct);
+            prop_assert_eq!(stats.median_pct, stats.total_pct);
+        }
+
+        /// Test that for a two element vector, avg == median.
+        #[test]
+        fn test_two_elements_median_equals_avg(a in util(), b in util()) {
+            let s = status_from_per_worker(vec![a, b]);
+            let stats = compute_cpu_stats(&s);
+            prop_assert_eq!(stats.avg_pct, stats.median_pct);
+        }
+
+        /// Test that for a uniform vector, avg == median.
+        #[test]
+        fn test_uniform_vector_avg_equals_median(
+            x in util(),
+            n in 1usize..20,
+        ) {
+            let per_worker = vec![x; n];
+            let s = status_from_per_worker(per_worker);
+            let stats = compute_cpu_stats(&s);
+            prop_assert_eq!(stats.avg_pct, stats.median_pct);
+        }
+
+        /// Test that duplicating the utilization vector preserves the average
+        /// and median while doubling the total.
+        #[test]
+        fn test_duplication_preserves_avg_median(per_worker in per_worker_vec()) {
+            let s_orig = status_from_per_worker(per_worker.clone());
+            let mut doubled = per_worker.clone();
+            doubled.extend(per_worker.clone());
+            let s_doubled = status_from_per_worker(doubled);
+
+            let orig = compute_cpu_stats(&s_orig);
+            let doubled_stats = compute_cpu_stats(&s_doubled);
+            prop_assert_eq!(orig.avg_pct, doubled_stats.avg_pct);
+            prop_assert_eq!(orig.median_pct, doubled_stats.median_pct);
+            prop_assert!(doubled_stats.total_pct >= orig.total_pct);
+        }
+
+        /// Test that raising any worker's utilisation cannot decrease any of
+        /// the counters.
+        #[test]
+        fn test_per_worker_monotone_in_one_element(
+            per_worker in per_worker_vec(),
+            delta in 0.0f64..=1.0f64,
+        ) {
+            // pick index deterministically from delta to keep strategy simple
+            let idx = (delta * 1000.0) as usize % per_worker.len();
+            let old = per_worker[idx];
+            let new_val = (old + delta).min(1.0);
+            prop_assume!(old < new_val);
+
+            let mut increased = per_worker.clone();
+            increased[idx] = new_val;
+
+            let s_old = status_from_per_worker(per_worker);
+            let s_new = status_from_per_worker(increased);
+            let old_stats = compute_cpu_stats(&s_old);
+            let new_stats = compute_cpu_stats(&s_new);
+
+            prop_assert!(new_stats.avg_pct >= old_stats.avg_pct);
+            prop_assert!(new_stats.total_pct >= old_stats.total_pct);
+            prop_assert!(new_stats.median_pct >= old_stats.median_pct);
+        }
+
+        /// Test that for a well-formed utilization vector, the metrics remain
+        /// in bounds.
+        #[test]
+        fn test_per_worker_bounds_and_total_dominance(per_worker in per_worker_vec()) {
+            let s = status_from_per_worker(per_worker.clone());
+            let stats = compute_cpu_stats(&s);
+            let n = per_worker.len() as u64;
+            prop_assert!(stats.avg_pct <= 100, "avg {} >100 for {:?}", stats.avg_pct, per_worker);
+            prop_assert!(stats.median_pct <= 100, "median {} >100 for {:?}", stats.median_pct, per_worker);
+            prop_assert!(stats.total_pct <= n * 100, "total {} > n*100={} for {:?}", stats.total_pct, n*100, per_worker);
+            prop_assert!(stats.total_pct >= stats.avg_pct, "total {} < avg {} for {:?}", stats.total_pct, stats.avg_pct, per_worker);
+            prop_assert!(stats.total_pct >= stats.median_pct, "total {} < median {} for {:?}", stats.total_pct, stats.median_pct, per_worker);
+        }
+
+        /// Test that average and median are between the min and max util
+        /// samples.
+        #[test]
+        fn test_avg_median_between_min_max(per_worker in per_worker_vec()) {
+            let s = status_from_per_worker(per_worker.clone());
+            let stats = compute_cpu_stats(&s);
+
+            let min_val = per_worker.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_val = per_worker.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let min_pct = (min_val * 100.0).round() as u64;
+            let max_pct = (max_val * 100.0).round() as u64;
+
+            prop_assert!(stats.avg_pct >= min_pct && stats.avg_pct <= max_pct,
+                "avg {} not in [{}, {}] for {:?}", stats.avg_pct, min_pct, max_pct, per_worker);
+            prop_assert!(stats.median_pct >= min_pct && stats.median_pct <= max_pct,
+                "median {} not in [{}, {}] for {:?}", stats.median_pct, min_pct, max_pct, per_worker);
+        }
+
+        /// Test that the fallback counters monotonically increase stats.
+        #[test]
+        fn test_fallback_total_monotone(
+            per_thread_util in util(),
+            count_a in 0u32..32,
+            count_b in 0u32..32,
+            util_lo in util(),
+            util_hi in util(),
+        ) {
+            prop_assume!(count_a < count_b);
+            prop_assume!(util_lo <= util_hi);
+
+            let s_lo = status_fallback(per_thread_util, count_a);
+            let s_hi = status_fallback(per_thread_util, count_b);
+            prop_assert!(compute_cpu_stats(&s_hi).total_pct >= compute_cpu_stats(&s_lo).total_pct);
+
+            let lo_stats = compute_cpu_stats(&s_lo);
+            let hi_stats = compute_cpu_stats(&s_hi);
+            prop_assert!(hi_stats.avg_pct >= lo_stats.avg_pct);
+            prop_assert!(hi_stats.median_pct >= lo_stats.median_pct);
+            prop_assert!(hi_stats.total_pct >= lo_stats.total_pct);
+        }
+
+        /// Test that fallback values keep the metrics in bounds.
+        #[test]
+        fn prop_fallback_bounds(
+            per_thread_util in util(),
+            thread_count in 1u32..32,
+        ) {
+            prop_assume!(per_thread_util > 0.0);
+            let s = status_fallback(per_thread_util, thread_count);
+            let stats = compute_cpu_stats(&s);
+            prop_assert!(stats.avg_pct <= 100);
+            prop_assert!(stats.median_pct <= 100);
+            prop_assert!(stats.total_pct <= thread_count as u64 * 100);
+            prop_assert!(stats.total_pct >= stats.avg_pct);
+            prop_assert!(stats.total_pct >= stats.median_pct);
+        }
+    }
+
+    fn vq_small() -> impl Strategy<Value = Vec<u64>> {
+        prop::collection::vec(0u64..10_000, 1..20)
+    }
+
+    fn vq_bounded() -> impl Strategy<Value = Vec<u64>> {
+        prop::collection::vec(0u64..1_000_000, 1..32)
+    }
+
+    /// Test that empty and None inputs return None.
+    #[test]
+    fn test_vq_none_and_empty_yield_all_none() {
+        assert_eq!(summarize_vq_depths(None), (None, None, None, None));
+
+        let empty: Vec<u64> = vec![];
+        assert_eq!(summarize_vq_depths(Some(&empty)), (None, None, None, None));
+    }
+
+    proptest! {
+        /// Test that a non-empty input always yields all-Some and count == len.
+        #[test]
+        fn test_vq_nonempty_yields_all_some_and_count_is_len(
+            depths in vq_small(),
+        ) {
+            let (count, total, avg, median) = summarize_vq_depths(Some(&depths));
+            prop_assert!(count.is_some());
+            prop_assert!(total.is_some());
+            prop_assert!(avg.is_some());
+            prop_assert!(median.is_some());
+            prop_assert_eq!(count.unwrap() as usize, depths.len());
+
+            // Appending one element must increase count by exactly one.
+            let mut extended = depths.clone();
+            extended.push(42);
+            let (count2, _, _, _) = summarize_vq_depths(Some(&extended));
+            prop_assert_eq!(count2.unwrap(), count.unwrap() + 1);
+        }
+
+        /// Test that a single element vector is the identity for all four
+        /// outputs.
+        #[test]
+        fn test_vq_singleton_is_identity(v in 0u64..1_000_000) {
+            let (count, total, avg, median) = summarize_vq_depths(Some(&[v]));
+            prop_assert_eq!(count, Some(1));
+            prop_assert_eq!(total, Some(v));
+            // average_x100 = v * 100 / 1
+            prop_assert_eq!(avg, Some(v * 100));
+            prop_assert_eq!(median, Some(v));
+        }
+
+        /// Test that a uniform vector has predictable total/avg/median.
+        #[test]
+        fn test_vq_uniform_vector_properties(
+            v in 0u64..10_000,
+            n in 1usize..20,
+        ) {
+            let depths = vec![v; n];
+            let (count, total, avg, median) = summarize_vq_depths(Some(&depths));
+            prop_assert_eq!(count, Some(n as u32));
+
+            let expected_total = v * n as u64;
+            prop_assert_eq!(total, Some(expected_total));
+            prop_assert_eq!(avg, Some(v * 100));
+            prop_assert_eq!(median, Some(v));
+        }
+
+        /// Test that two elements combine with saturating add and the median
+        /// is floor((a+b)/2).
+        #[test]
+        fn test_vq_two_elements_total_and_median(
+            a in 0u64..1_000_000,
+            b in 0u64..1_000_000,
+        ) {
+            let (count, total, avg, median) = summarize_vq_depths(Some(&[a, b]));
+            prop_assert_eq!(count, Some(2));
+            prop_assert_eq!(total, Some(a.saturating_add(b)));
+            // average_x100 = (a+b)*100/2
+            let expected_avg = ((u128::from(a.saturating_add(b)) * 100) / 2) as u64;
+            prop_assert_eq!(avg, Some(expected_avg));
+            let expected_median = ((a as f64 + b as f64) / 2.0).floor() as u64;
+            prop_assert_eq!(median, Some(expected_median));
+        }
+
+        /// Test that the result is invariant under permutation.
+        #[test]
+        fn test_vq_permutation_invariance(depths in vq_bounded()) {
+            let (c0, t0, a0, m0) = summarize_vq_depths(Some(&depths));
+            let mut sorted = depths.clone();
+            sorted.sort_unstable();
+            let (c1, t1, a1, m1) = summarize_vq_depths(Some(&sorted));
+            prop_assert_eq!(c0, c1);
+            prop_assert_eq!(t0, t1);
+            prop_assert_eq!(a0, a1);
+            prop_assert_eq!(m0, m1);
+
+            let mut reversed = depths.clone();
+            reversed.reverse();
+            let (c2, t2, a2, m2) = summarize_vq_depths(Some(&reversed));
+            prop_assert_eq!(c0, c2);
+            prop_assert_eq!(t0, t2);
+            prop_assert_eq!(a0, a2);
+            prop_assert_eq!(m0, m2);
+        }
+
+        /// Test that duplicating any vector preserves avg/median and doubles
+        /// total via saturating arithmetic.
+        #[test]
+        fn test_vq_duplication_preserves_avg_median(depths in vq_small()) {
+            let (c0, t0, a0, m0) = summarize_vq_depths(Some(&depths));
+            let mut doubled = depths.clone();
+            doubled.extend(depths.clone());
+            let (c1, t1, a1, m1) = summarize_vq_depths(Some(&doubled));
+            prop_assert_eq!(c1.unwrap(), c0.unwrap() * 2);
+            prop_assert_eq!(t1, Some(t0.unwrap().saturating_mul(2)));
+            prop_assert_eq!(a0, a1);
+            prop_assert_eq!(m0, m1);
+        }
+
+        /// Test that total is compositional via saturating addition.
+        #[test]
+        fn test_vq_concatenation_total_is_saturating_sum(
+            a in vq_small(),
+            b in vq_small(),
+        ) {
+            let (t_a, ) = {
+                let (_, t, _, _) = summarize_vq_depths(Some(&a));
+                (t.unwrap(),)
+            };
+            let (t_b, ) = {
+                let (_, t, _, _) = summarize_vq_depths(Some(&b));
+                (t.unwrap(),)
+            };
+            let mut concat = a.clone();
+            concat.extend(b.clone());
+            let (c_concat, t_concat, _, _) = summarize_vq_depths(Some(&concat));
+            prop_assert_eq!(t_concat.unwrap(), t_a.saturating_add(t_b));
+            prop_assert_eq!(c_concat.unwrap() as usize, a.len() + b.len());
+        }
+
+        /// Test that appending an element updates count and total predictably.
+        #[test]
+        fn test_vq_append_increments_count_and_total(
+            depths in vq_small(),
+            x in 0u64..10_000,
+        ) {
+            let (_, t0, _, _) = summarize_vq_depths(Some(&depths));
+            let mut extended = depths.clone();
+            extended.push(x);
+            let (c1, t1, _, _) = summarize_vq_depths(Some(&extended));
+            prop_assert_eq!(c1.unwrap() as usize, depths.len() + 1);
+            prop_assert_eq!(t1.unwrap(), t0.unwrap().saturating_add(x));
+        }
+
+        /// Test that avg_x100 lies between min*100 and max*100.
+        #[test]
+        fn test_vq_average_between_min_max(depths in vq_bounded()) {
+            let (_, _, avg, _) = summarize_vq_depths(Some(&depths));
+            let avg = avg.unwrap();
+            let min = *depths.iter().min().unwrap();
+            let max = *depths.iter().max().unwrap();
+            prop_assert!(avg >= min * 100, "avg {} < min*100 {} for {:?}", avg, min*100, depths);
+            prop_assert!(avg <= max * 100, "avg {} > max*100 {} for {:?}", avg, max*100, depths);
+        }
+
+        /// Test that total dominates each element and determines avg_x100 zero
+        /// case.
+        #[test]
+        fn test_vq_total_dominates_elements(depths in vq_small()) {
+            let (_, total, _, _) = summarize_vq_depths(Some(&depths));
+            let total = total.unwrap();
+            let max = *depths.iter().max().unwrap();
+            prop_assert!(total >= max, "total {} < max {} for {:?}", total, max, depths);
+            for &v in &depths {
+                prop_assert!(total >= v, "total {} < element {} for {:?}", total, v, depths);
+            }
+            let all_zero = depths.iter().all(|&v| v == 0);
+            prop_assert_eq!(total == 0, all_zero);
+        }
+
+        /// Test that median lies between min and max and never exceeds total.
+        #[test]
+        fn test_vq_median_between_min_max_and_less_than_total(depths in vq_small()) {
+            let (_, total, _, median) = summarize_vq_depths(Some(&depths));
+            let total = total.unwrap();
+            let median = median.unwrap();
+            let min = *depths.iter().min().unwrap();
+            let max = *depths.iter().max().unwrap();
+            prop_assert!(median >= min, "median {} < min {} for {:?}", median, min, depths);
+            prop_assert!(median <= max, "median {} > max {} for {:?}", median, max, depths);
+            // For non-negative depths, total is at least max, so median <= total.
+            // This also holds when total is saturated to MAX.
+            prop_assert!(median <= total, "median {} > total {} for {:?}", median, total, depths);
+        }
+
+        /// Test that total and median are monotone when raising one element.
+        #[test]
+        fn test_vq_monotone_when_raising_one_element(
+            depths in vq_bounded(),
+            delta in 1u64..10_000,
+        ) {
+            let idx = depths.len() / 2; // deterministic index
+            let old = depths[idx];
+            let new_val = old.saturating_add(delta);
+            prop_assume!(new_val != old);
+            let mut raised = depths.clone();
+            raised[idx] = new_val;
+
+            let (_, t_old, a_old, m_old) = summarize_vq_depths(Some(&depths));
+            let (_, t_new, a_new, m_new) = summarize_vq_depths(Some(&raised));
+
+            prop_assert!(t_new.unwrap() >= t_old.unwrap(),
+                "total not monotone: {} -> {} for {:?} delta {}", t_old.unwrap(), t_new.unwrap(), depths, delta);
+            prop_assert!(a_new.unwrap() >= a_old.unwrap(),
+                "avg not monotone: {} -> {} for {:?} delta {}", a_old.unwrap(), a_new.unwrap(), depths, delta);
+            // Median should not decrease when any element increases.
+            prop_assert!(m_new.unwrap() >= m_old.unwrap(),
+                "median not monotone: {} -> {} for {:?} delta {}", m_old.unwrap(), m_new.unwrap(), depths, delta);
+        }
+
+        /// Test that saturating addition is used for total and does not wrap.
+        #[test]
+        fn test_vq_saturating_total_does_not_wrap(
+            prefix in prop::collection::vec(0u64..1_000, 0..5),
+        ) {
+            // Two large values that would wrap on normal addition.
+            let depths = {
+                let mut v = prefix.clone();
+                v.push(u64::MAX);
+                v.push(1);
+                v
+            };
+            let (_, total, _, _) = summarize_vq_depths(Some(&depths));
+            prop_assert_eq!(total, Some(u64::MAX));
+        }
+    }
+
+    fn cpu_sample(busy: u64, total: u64) -> HostCpuSample {
+        HostCpuSample {
+            busy_ticks: busy,
+            total_ticks: total,
+        }
+    }
+
+    /// Test that host CPU utilisation is the clamped busy/total delta ratio.
+    #[rstest]
+    #[case::zero_total(cpu_sample(10, 10), cpu_sample(10, 10), 0.0)]
+    #[case::counter_reset(cpu_sample(5, 20), cpu_sample(2, 10), 0.0)]
+    #[case::zero_busy(cpu_sample(0, 0), cpu_sample(0, 10), 0.0)]
+    #[case::full(cpu_sample(0, 0), cpu_sample(10, 10), 1.0)]
+    #[case::half(cpu_sample(0, 0), cpu_sample(5, 10), 0.5)]
+    #[case::clamp(cpu_sample(0, 0), cpu_sample(20, 10), 1.0)]
+    fn test_host_cpu_utilisation(
+        #[case] prev: HostCpuSample,
+        #[case] cur: HostCpuSample,
+        #[case] expected: f64,
+    ) {
+        assert_eq!(host_cpu_utilisation(prev, cur), expected);
+    }
+
+    /// Contents of a valid pressure file.
+    fn psi_content(avg10: f32) -> String {
+        format!(
+            "some avg10={avg10:.2} avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        )
+    }
+
+    /// Write a valid pressure file.
+    fn write_pressure_file(path: PrefixedPath, avg10: f32) {
+        let p: &std::path::Path = &path;
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, psi_content(avg10)).unwrap();
+    }
+
+    proptest! {
+        /// Test that `read_psi_sample` round-trips arbitrary pressure values
+        /// through the file format.
+        #[test]
+        fn test_read_psi_sample_proptest_roundtrip(
+            cpu in 0.0f32..100.0,
+            io in 0.0f32..100.0,
+            mem in 0.0f32..100.0,
+        ) {
+            let _mockdir = MockDir::new();
+            write_pressure_file(PrefixedPath::new("/proc/pressure/cpu"), cpu);
+            write_pressure_file(PrefixedPath::new("/proc/pressure/io"), io);
+            write_pressure_file(PrefixedPath::new("/proc/pressure/memory"), mem);
+
+            let sample = read_psi_sample();
+            // psi_content formats with two decimals; procfs parses as f32 then casts to f64
+            let expected_cpu = format!("{cpu:.2}").parse::<f32>().unwrap() as f64;
+            let expected_io = format!("{io:.2}").parse::<f32>().unwrap() as f64;
+            let expected_mem = format!("{mem:.2}").parse::<f32>().unwrap() as f64;
+            prop_assert!((sample.cpu_some_avg10 - expected_cpu).abs() < 1e-6);
+            prop_assert!((sample.io_some_avg10 - expected_io).abs() < 1e-6);
+            prop_assert!((sample.memory_some_avg10 - expected_mem).abs() < 1e-6);
+        }
+
+        /// Test that `read_psi_sample` handles randomly present or absent
+        /// pressure files with arbitrary values.
+        #[test]
+        fn test_read_psi_sample_proptest_optional_files(
+            cpu_opt in proptest::option::of(0.0f32..100.0),
+            io_opt in proptest::option::of(0.0f32..100.0),
+            mem_opt in proptest::option::of(0.0f32..100.0),
+        ) {
+            let _mockdir = MockDir::new();
+            if let Some(v) = cpu_opt {
+                write_pressure_file(PrefixedPath::new("/proc/pressure/cpu"), v);
+            }
+            if let Some(v) = io_opt {
+                write_pressure_file(PrefixedPath::new("/proc/pressure/io"), v);
+            }
+            if let Some(v) = mem_opt {
+                write_pressure_file(PrefixedPath::new("/proc/pressure/memory"), v);
+            }
+
+            let sample = read_psi_sample();
+            let expected = |opt: Option<f32>| opt.map(|v| format!("{v:.2}").parse::<f32>().unwrap() as f64).unwrap_or(0.0);
+            prop_assert!((sample.cpu_some_avg10 - expected(cpu_opt)).abs() < 1e-6);
+            prop_assert!((sample.io_some_avg10 - expected(io_opt)).abs() < 1e-6);
+            prop_assert!((sample.memory_some_avg10 - expected(mem_opt)).abs() < 1e-6);
+        }
     }
 }
