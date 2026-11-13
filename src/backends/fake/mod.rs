@@ -340,7 +340,8 @@ impl InstanceClient for FakeClient {
             writeln!(calls, "{line}")?;
         }
 
-        // Directly manipulate mockfsd via D-Bus, procfs-derived like production.
+        // Directly manipulate mockfsd via D-Bus, procfs-derived like
+        // production.
         let vm_id = self
             .vm_path
             .file_stem()
@@ -354,7 +355,8 @@ impl InstanceClient for FakeClient {
         for idx in count..current {
             let tid = pid + idx as i32 + 1;
             let path = format!("/{pid}/task/{tid}");
-            // Best-effort: ignore errors when mockfs is not available (unit tests)
+            // Best-effort: ignore errors when mockfs is not available (unit
+            // tests)
             let _ = mockfs_unregister(&mount, &path).await;
         }
 
