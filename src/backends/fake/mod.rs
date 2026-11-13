@@ -13,7 +13,6 @@
 //!
 //! VM JSON files consist of the following which are used to construct a
 //! [`ThreadPoolSnapshot`]:
-//!  * thread_count - Number of worker threads assigned to this VM
 //!  * vcpu_count - Number of vCPUs
 //!  * read_io_count - Cumulative read IO operations
 //!  * write_io_count - Cumulative write IO operations
@@ -80,14 +79,12 @@ impl FakeConfig {
 
 /// One component-test VM, as stored on disk.
 ///
-/// Missing fields take [`VmFile::default`]: one thread, one vCPU, and
-/// `managed` so the controller may scale the VM.
+/// Missing fields take [`VmFile::default`]: one vCPU and `managed` so the
+/// controller may scale the VM.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct VmFile {
-    thread_count: u32,
     vcpu_count: u32,
-    per_thread_util: f64,
     /// First-snapshot ownership. `true` lets the controller scale the VM.
     managed: bool,
     fail_snapshot: bool,
@@ -99,9 +96,7 @@ struct VmFile {
 impl Default for VmFile {
     fn default() -> Self {
         Self {
-            thread_count: 1,
             vcpu_count: 1,
-            per_thread_util: 0.0,
             managed: true,
             fail_snapshot: false,
             read_io_count: 0,
@@ -162,6 +157,7 @@ fn discover_vms(state_dir: &PrefixedPath) -> Vec<Arc<Instance>> {
         let Some(vm) = read_vm(&path, id) else {
             continue;
         };
+        let pid = fake_pid(id);
         let client = FakeClient {
             vm_path: path.clone(),
             calls_path: state_dir.join("calls.json").to_path_buf(),
@@ -170,7 +166,7 @@ fn discover_vms(state_dir: &PrefixedPath) -> Vec<Arc<Instance>> {
         instances.push(Arc::new(Instance::new(
             id.to_string(),
             PrefixedPath::new(id),
-            0,
+            pid,
             client,
         )));
     }
@@ -189,6 +185,13 @@ struct FakeClient {
     vm_path: std::path::PathBuf,
     calls_path: std::path::PathBuf,
     managed: bool,
+}
+
+fn fake_pid(id: &str) -> i32 {
+    let hash = id.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    10_000 + (hash % 1_000_000) as i32
 }
 
 /// `<vm-id>.json` shares `<vm-id>.lock` with the pytest harness.
@@ -230,6 +233,7 @@ impl VmFile {
         Ok(serde_json::from_str(&data)?)
     }
 
+    #[allow(dead_code)]
     fn write_atomic(path: &std::path::Path, vm: &Self) -> Result<(), BackendClientError> {
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(vm)?)?;
@@ -238,22 +242,134 @@ impl VmFile {
     }
 }
 
+fn task_stat(tid: i32, name: &str, ticks: u64) -> Vec<u8> {
+    // 49 fields, field 14 (index 10) is utime
+    let mut fields = vec!["0".to_string(); 49];
+    fields[10] = ticks.to_string();
+    fields[16] = "1".to_string(); // num_threads
+    fields[18] = "1".to_string(); // starttime
+    format!("{tid} ({name}) S {}\n", fields.join(" ")).into_bytes()
+}
+
+fn mockfs_mount() -> String {
+    // PrefixedPath handles IO_THREAD_CONTROLLER_ROOT_PATH
+    crate::path::PrefixedPath::new("/proc")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn mockfs_bus_address() -> Option<String> {
+    std::env::var("DBUS_SYSTEM_BUS_ADDRESS")
+        .or_else(|_| std::env::var("IO_THREAD_CONTROLLER_DBUS_ADDRESS"))
+        .ok()
+}
+
+async fn mockfs_register_static(
+    mount: &str,
+    path: &str,
+    content: Vec<u8>,
+) -> Result<(), BackendClientError> {
+    let Some(addr) = mockfs_bus_address() else {
+        return Ok(());
+    };
+    let conn = zbus::connection::Builder::address(addr.as_str())
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?
+        .build()
+        .await
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "com.nutanix.mockfs1",
+        "/com/nutanix/mockfs1",
+        "com.nutanix.mockfs1",
+    )
+    .await
+    .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    proxy
+        .call::<_, _, ()>("RegisterStatic", &(mount, path, content))
+        .await
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    Ok(())
+}
+
+async fn mockfs_unregister(mount: &str, path: &str) -> Result<(), BackendClientError> {
+    let Some(addr) = mockfs_bus_address() else {
+        return Ok(());
+    };
+    let conn = zbus::connection::Builder::address(addr.as_str())
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?
+        .build()
+        .await
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "com.nutanix.mockfs1",
+        "/com/nutanix/mockfs1",
+        "com.nutanix.mockfs1",
+    )
+    .await
+    .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    let _: bool = proxy
+        .call("Unregister", &(mount, path))
+        .await
+        .map_err(|e| BackendClientError::Transport(e.to_string()))?;
+    Ok(())
+}
+
+fn current_thread_count_via_procfs(pid: i32) -> u32 {
+    let task_dir = crate::path::PrefixedPath::new(&format!("/proc/{pid}/task"));
+    match std::fs::read_dir(&*task_dir) {
+        Ok(entries) => entries.count() as u32,
+        Err(_) => 0,
+    }
+}
+
 #[async_trait]
 impl InstanceClient for FakeClient {
     async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
-        let _guard = LockGuard::acquire(&lock_path_for(&self.vm_path))?;
-        let mut vm = VmFile::read(&self.vm_path)?;
-        vm.thread_count = count;
-        VmFile::write_atomic(&self.vm_path, &vm)?;
-        let mut calls = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.calls_path)?;
-        let line = serde_json::json!({
-            "vm": self.vm_path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(""),
-            "threads": count,
-        });
-        writeln!(calls, "{line}")?;
+        // Record the call for the harness assertions (calls.json)
+        {
+            let mut calls = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.calls_path)?;
+            let line = serde_json::json!({
+                "vm": self.vm_path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(""),
+                "threads": count,
+            });
+            writeln!(calls, "{line}")?;
+        }
+
+        // Directly manipulate mockfsd via D-Bus, procfs-derived like
+        // production.
+        let vm_id = self
+            .vm_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let pid = fake_pid(vm_id);
+        let mount = mockfs_mount();
+        let current = current_thread_count_via_procfs(pid);
+
+        // Unregister removed threads
+        for idx in count..current {
+            let tid = pid + idx as i32 + 1;
+            let path = format!("/{pid}/task/{tid}");
+            // Best-effort: ignore errors when mockfs is not available (unit
+            // tests)
+            let _ = mockfs_unregister(&mount, &path).await;
+        }
+
+        // Register new threads with 0 ticks; tick advancement is handled by
+        // the Python harness's background thread that periodically updates
+        // all TIDs via RegisterStatic.
+        for idx in current..count {
+            let tid = pid + idx as i32 + 1;
+            let path = format!("/{pid}/task/{tid}/stat");
+            let content = task_stat(tid, &format!("fake-worker-{idx}"), 0);
+            let _ = mockfs_register_static(&mount, &path, content).await;
+        }
+
         Ok(())
     }
 
@@ -267,7 +383,6 @@ impl InstanceClient for FakeClient {
             )));
         }
         Ok(ThreadPoolSnapshot {
-            thread_count: vm.thread_count,
             vcpu_count: vm.vcpu_count,
             perf: Some(InstancePerfSample {
                 read_io_count: vm.read_io_count,
@@ -277,7 +392,6 @@ impl InstanceClient for FakeClient {
                 write_bytes_total: 0,
                 ..Default::default()
             }),
-            per_thread_util: Some(vm.per_thread_util),
         })
     }
 
