@@ -789,12 +789,7 @@ mod tests {
     /// Test that a successful client snapshot updates liveness and raw state.
     #[tokio::test]
     async fn test_instance_refresh_state_applies_successful_snapshot() {
-        let instance = Instance::new(
-            "vm-ok".to_string(),
-            Path::new(""),
-            7,
-            SnapshotClient,
-        );
+        let instance = Instance::new("vm-ok".to_string(), Path::new(""), 7, SnapshotClient);
         assert!(instance.refresh_state(false).await);
         let status = instance.status.read().await;
         assert!(status.alive);
@@ -822,12 +817,7 @@ mod tests {
     /// Test that `Display` for an instance prints the bare VM id.
     #[test]
     fn test_display_trims_instance_id() {
-        let instance = Instance::new(
-            "  vm-1  ".to_string(),
-            Path::new(""),
-            1,
-            SnapshotClient,
-        );
+        let instance = Instance::new("  vm-1  ".to_string(), Path::new(""), 1, SnapshotClient);
         assert_eq!(instance.to_string(), "vm-1");
     }
 

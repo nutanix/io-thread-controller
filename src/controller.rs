@@ -1663,7 +1663,7 @@ mod tests {
         controller.sync_instances(vec![ok, bad]).await.unwrap();
         assert_eq!(added.load(Ordering::Relaxed), 2);
 
-        let task_dir = PrefixedPath::new("/proc/1/task/10");
+        let task_dir = Path::new("/proc/1/task/10");
         std::fs::create_dir_all(&task_dir).unwrap();
         std::fs::write(
             task_dir.join("stat"),
