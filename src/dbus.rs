@@ -327,8 +327,22 @@ impl Service {
 
 /// Spin the D-Bus service on the well-known name / object path
 /// backed by `service` and drive replies from the controller mpsc.
+///
+/// Component tests set `IO_THREAD_CONTROLLER_DBUS_ADDRESS` to use their
+/// private bus; production leaves it unset and uses the system bus.
 pub async fn serve(service: Service) -> Result<zbus::Connection, zbus::Error> {
-    let conn = zbus::connection::Builder::system()?
+    let builder = match std::env::var("IO_THREAD_CONTROLLER_DBUS_ADDRESS") {
+        Ok(address) => zbus::connection::Builder::address(address.as_str())?,
+        Err(_) => zbus::connection::Builder::system()?,
+    };
+    serve_with(builder, service).await
+}
+
+async fn serve_with(
+    builder: zbus::connection::Builder<'_>,
+    service: Service,
+) -> Result<zbus::Connection, zbus::Error> {
+    let conn = builder
         .name(DBUS_BUS_NAME)?
         .serve_at(DBUS_OBJECT_PATH, service)?
         .build()
