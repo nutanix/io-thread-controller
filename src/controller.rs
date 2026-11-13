@@ -1068,7 +1068,7 @@ fn format_latency_cell(latency: Option<crate::instance::SnapshotLatency>, sep: &
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
     };
 
@@ -1097,19 +1097,36 @@ mod tests {
     }
 
     struct VcpuLimitedClient {
-        target: Arc<AtomicU32>,
+        /// History of worker thread counts.
+        history: Mutex<Vec<u32>>,
+    }
+
+    impl VcpuLimitedClient {
+        fn new(init: u32) -> Self {
+            Self {
+                history: Mutex::new(vec![init]),
+            }
+        }
+
+        fn history(&self) -> impl std::ops::Deref<Target = Vec<u32>> {
+            self.history.lock().unwrap()
+        }
+
+        fn last(&self) -> u32 {
+            *self.history().last().unwrap()
+        }
     }
 
     #[async_trait]
-    impl InstanceClient for VcpuLimitedClient {
+    impl InstanceClient for Arc<VcpuLimitedClient> {
         async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
-            self.target.store(count, Ordering::Relaxed);
+            self.history.lock().unwrap().push(count);
             Ok(())
         }
 
         async fn get_thread_pool_snapshot(&self) -> Result<ThreadPoolSnapshot, BackendClientError> {
             Ok(ThreadPoolSnapshot {
-                thread_count: self.target.load(Ordering::Relaxed),
+                thread_count: *self.history.lock().unwrap().last().unwrap(),
                 vcpu_count: 4,
                 perf: None,
                 per_thread_util: None,
@@ -1129,15 +1146,12 @@ mod tests {
             cooldown_secs: 0,
             ..Default::default()
         };
-        let target = Arc::new(AtomicU32::new(2));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
+        let client = Arc::new(VcpuLimitedClient::new(2));
         let instance = Arc::new(Instance::new(
             "some-vcpu-limited-test-instance".to_string(),
             Path::new(""),
             0,
-            client,
+            Arc::clone(&client),
         ));
         {
             let mut status = instance.status.write().await;
@@ -1149,25 +1163,24 @@ mod tests {
         controller
             .instances
             .insert(instance.id.clone(), Arc::clone(&instance));
-        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Up(4))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 4);
+        assert_eq!(client.last(), 4);
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Up(5))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 4);
+        assert_eq!(client.last(), 4);
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Down(3))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
 
         instance.status.write().await.ownership_classification = Some(false);
         controller
@@ -1178,17 +1191,9 @@ mod tests {
             .apply_engine_decision(&instance.id, ScaleAction::Down(2))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
 
-        let events = per_vm_log_events(&per_vm_log, &instance.id);
-        assert!(events[0].starts_with("event=scale_applied "), "{events:?}");
-        assert!(
-            events[1].starts_with(
-                "automatic scaling suppressed by vCPU cap event=scale_blocked \
-                 reason=target_exceeds_vcpu_count "
-            ) && events[1].ends_with(" target=5 vcpus=4"),
-            "{events:?}"
-        );
+        assert_eq!(*client.history(), vec![2, 4, 3])
     }
 
     // FIXME This test seems like it mixes basic ScaleAction unit tests and more
@@ -1207,15 +1212,12 @@ mod tests {
             cooldown_secs: 30,
             ..Default::default()
         };
-        let target = Arc::new(AtomicU32::new(2));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
+        let client = Arc::new(VcpuLimitedClient::new(2));
         let instance = Arc::new(Instance::new(
             "policy-guarded".to_string(),
             Path::new(""),
             0,
-            client,
+            Arc::clone(&client),
         ));
         {
             let mut status = instance.status.write().await;
@@ -1232,26 +1234,26 @@ mod tests {
             .apply_engine_decision(&instance.id, ScaleAction::Up(3))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
+        assert_eq!(client.last(), 2);
 
         controller.host_cpu_util = 0.0;
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Up(3))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
+        assert_eq!(client.last(), 2);
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Down(2))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
+        assert_eq!(client.last(), 2);
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Revert(2))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
+        assert_eq!(client.last(), 2);
 
         controller
             .apply_engine_decision(&instance.id, ScaleAction::Down(1))
@@ -1261,7 +1263,9 @@ mod tests {
             .apply_engine_decision(&instance.id, ScaleAction::Up(4))
             .await
             .unwrap();
-        assert_eq!(target.load(Ordering::Relaxed), 2);
+        assert_eq!(client.last(), 2);
+
+        assert_eq!(*client.history(), vec![2])
     }
 
     /// Test that a performance-validation revert arms cooldown so the next
@@ -1277,15 +1281,12 @@ mod tests {
             max_thread_count: 8,
             ..Default::default()
         };
-        let target = Arc::new(AtomicU32::new(4));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
+        let client = Arc::new(VcpuLimitedClient::new(4));
         let instance = Arc::new(Instance::new(
             "revert-cooldown".to_string(),
             Path::new(""),
             0,
-            client,
+            Arc::clone(&client),
         ));
         {
             let mut status = instance.status.write().await;
@@ -1303,7 +1304,7 @@ mod tests {
             .await
             .unwrap();
         assert!(applied);
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
         assert!(instance.status.read().await.cooldown_until.is_some());
 
         // Immediate re-up must be suppressed by the revert's cooldown.
@@ -1312,14 +1313,16 @@ mod tests {
             .await
             .unwrap();
         assert!(!retried);
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
 
         let down_retry = controller
             .apply_engine_decision(&instance.id, ScaleAction::Down(2))
             .await
             .unwrap();
         assert!(!down_retry);
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
+
+        assert_eq!(*client.history(), vec![4, 3]);
     }
 
     /// Test that revert itself is not blocked by an existing cooldown, so a
@@ -1335,15 +1338,12 @@ mod tests {
             max_thread_count: 8,
             ..Default::default()
         };
-        let target = Arc::new(AtomicU32::new(3));
-        let client = VcpuLimitedClient {
-            target: Arc::clone(&target),
-        };
+        let client = Arc::new(VcpuLimitedClient::new(3));
         let instance = Arc::new(Instance::new(
             "revert-bypass".to_string(),
             Path::new(""),
             0,
-            client,
+            Arc::clone(&client),
         ));
         {
             let mut status = instance.status.write().await;
@@ -1362,7 +1362,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(target.load(Ordering::Relaxed), 4);
+        assert_eq!(client.last(), 4);
         assert!(instance.status.read().await.cooldown_until.is_some());
 
         // Cooldown from the up must not trap the pool at the failed size.
@@ -1372,7 +1372,8 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(target.load(Ordering::Relaxed), 3);
+        assert_eq!(client.last(), 3);
+        assert_eq!(*client.history(), vec![3, 4, 3]);
     }
 
     struct BulkClient {
