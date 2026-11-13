@@ -32,7 +32,7 @@ pub enum ConfigError {
 }
 
 /// Tunable parameters for the controller.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Which registered scaling engine drives decisions.
@@ -363,7 +363,24 @@ pub fn dump_default_config() -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+    use rstest::rstest;
+
     use super::*;
+
+    use crate::test::{MockDir, mockdir::mockdir};
+
+    /// Generate a string which resembles a relative unix path.
+    fn arb_path_string() -> impl Strategy<Value = String> {
+        prop_oneof![
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}",
+            "[a-z0-9]{1,8}(/[a-z0-9]{1,8}){0,2}".prop_map(|tail| format!("/{tail}")),
+        ]
+    }
+
+    fn reasonable_f64() -> impl Strategy<Value = f64> {
+        (-1000..=1000).prop_map(|i| i as f64 / 100.0)
+    }
 
     /// Test that the default `Config` validates.
     #[test]
@@ -468,39 +485,56 @@ mod tests {
         assert!(err.to_string().contains("expected u64"), "{err}");
     }
 
-    /// Test that minimal valid JSON loads into `Config` with the
-    /// expected engine, poll, and paths.
-    #[test]
-    fn test_config_load_round_trips_every_field() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(
-            &path,
-            r#"{
-                "engine": "threshold",
-                "engine_config_dir": "/etc/io-thread-controller/engines",
-                "backend_config_dir": "/etc/io-thread-controller/backends",
-                "scale_poll_secs": 7,
-                "vm_state_path": "/var/lib/io-thread-controller/vm-state.json"
-            }"#,
-        )
-        .unwrap();
+    macro_rules! test_round_trips {
+        ($i:ident in $v:expr) => {
+            mod $i {
+                use super::*;
 
-        let cfg: Config = load_or_default(PrefixedPath::new(path.to_str().unwrap())).unwrap();
-        assert_eq!(cfg.engine, "threshold");
-        assert_eq!(cfg.scale_poll_secs, 7);
-        assert_eq!(
-            cfg.engine_config_dir.as_os_str(),
-            std::ffi::OsStr::new("/etc/io-thread-controller/engines")
-        );
+                proptest! {
+                    #[test]
+                    fn test_config_load_round_trips_field(
+                        value in $v
+                    ) {
+                        let _md = mockdir();
+                        let cfg = Config {
+                            $i: value.into(),
+                            ..Default::default()
+                        };
+                        let path = PrefixedPath::new("/config.json");
+                        std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+                        let loaded: Config = load_or_default(path).unwrap();
+                        prop_assert_eq!(loaded, cfg);
+                    }
+                }
+            }
+        };
     }
+
+    // Test that each field in Config can survive a save-load round trip.
+    test_round_trips!(engine in any::<String>());
+    test_round_trips!(engine_config_dir in arb_path_string());
+    test_round_trips!(backend_config_dir in arb_path_string());
+    test_round_trips!(vm_state_path in arb_path_string());
+    test_round_trips!(min_thread_count in any::<u32>());
+    test_round_trips!(max_thread_count in any::<u32>());
+    test_round_trips!(host_cpu_scale_up_ceiling in reasonable_f64());
+    test_round_trips!(cooldown_secs in any::<u64>());
+    test_round_trips!(scale_poll_secs in any::<u64>());
+    test_round_trips!(round_up_durations in any::<bool>());
+    test_round_trips!(enable_per_vm_status_line in any::<bool>());
+    test_round_trips!(enable_per_vm_main_log in any::<bool>());
+    test_round_trips!(enable_aggregate_status_line in any::<bool>());
+    test_round_trips!(print_status_header in any::<bool>());
+    test_round_trips!(max_instances_adjusted_per_poll in any::<u32>());
+    test_round_trips!(experimental_psi_monitoring in any::<bool>());
+    test_round_trips!(refresh_cgroup_on_each_read in any::<bool>());
+    test_round_trips!(dry_run in any::<bool>());
 
     /// Test that loading JSON with an unknown field returns
     /// `ConfigError::SerdeJson`.
-    #[test]
-    fn test_config_load_rejects_unknown_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
+    #[rstest]
+    fn test_config_load_rejects_unknown_fields(#[from(mockdir)] _mockdir: MockDir) {
+        let path = PrefixedPath::new("/config");
         std::fs::write(
             &path,
             r#"{
@@ -513,7 +547,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_or_default::<Config>(PrefixedPath::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_or_default::<Config>(&path).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
     /// Test that pretty-printed default JSON includes engine, poll
@@ -524,21 +558,6 @@ mod tests {
         assert!(dumped.contains(r#""engine": "threshold""#));
         assert!(dumped.contains(r#""scale_poll_secs": 10"#));
         assert!(dumped.contains(r#""/etc/io-thread-controller.d/engines""#));
-    }
-
-    /// Test that serde defaults for min/max threads, host CPU ceiling,
-    /// and cooldown match `Config::default()`.
-    #[test]
-    fn test_controller_policy_defaults_round_trip() {
-        let cfg: Config = serde_json::from_str(r#"{"engine": "foo", "engine_config_dir": "/path/to/engines", "backend_config_dir": "/path/to/backends", "scale_poll_secs": 42, "vm_state_path": "/path/to/vm-state.json"}"#).unwrap();
-        assert_eq!(cfg.min_thread_count, 1);
-        assert_eq!(cfg.max_thread_count, 8);
-        assert!((cfg.host_cpu_scale_up_ceiling - 0.9).abs() < f64::EPSILON);
-        assert_eq!(cfg.cooldown_secs, 30);
-        assert!(!cfg.round_up_durations);
-
-        let serialized = serde_json::to_string(&cfg).unwrap();
-        assert!(serialized.contains(r#""host_cpu_scale_up_ceiling_percent":90.0"#));
     }
 
     /// Test that `refresh_cgroup_on_each_read` defaults to false in

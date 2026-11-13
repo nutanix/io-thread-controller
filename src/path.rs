@@ -19,17 +19,24 @@ use std::{
 use glob;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefixedPath {
     path: std::path::PathBuf,
 }
 
 impl Serialize for PrefixedPath {
+    /// Strips the effective root so deserializing doesn't prefix twice.
+    /// Paths outside the effective root (e.g. created under another
+    /// `MockDir`) are serialized unchanged.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.path.to_string_lossy())
+        let path = match self.path.strip_prefix(effective_root()) {
+            Ok(rel) if self.path.is_absolute() => std::path::Path::new("/").join(rel),
+            _ => self.path.clone(),
+        };
+        serializer.serialize_str(&path.to_string_lossy())
     }
 }
 
