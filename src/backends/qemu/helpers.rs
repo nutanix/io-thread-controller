@@ -238,8 +238,8 @@ impl CpuSample {
     }
 
     /// Compute average per-IOThread CPU utilisation between two samples.
-    // TODO add unit test for this function and the call site, and that it can be
-    // folded into the Sub.
+    // TODO add unit test for this function and the call site, and that it can
+    // be folded into the Sub.
     pub fn diff_jiffies_sample(prev: &Self, cur: &Self) -> f64 {
         let Some(elapsed) = cur.wall.checked_duration_since(prev.wall) else {
             return 0.0;

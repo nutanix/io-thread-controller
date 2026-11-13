@@ -803,7 +803,8 @@ impl ScalingEngine for ThresholdEngine {
         let block_scale_up =
             instance_state.advance_post_revert_up_hold(sample, self.polls.post_revert_up_recovery);
         // Grace ignores metrics; recovery updates the rate inside advance.
-        // Once the hold ends (or if there was none), refresh the normal baseline.
+        // Once the hold ends (or if there was none), refresh the normal
+        // baseline.
         if !block_scale_up {
             instance_state.refresh_baseline_rate(sample);
         }
@@ -826,8 +827,8 @@ impl ScalingEngine for ThresholdEngine {
                 );
                 return ScaleAction::None;
             }
-            // FIXME The min seems redundant given the thread count will always be less than
-            // or equal to the max_thread_count here.
+            // FIXME The min seems redundant given the thread count will always
+            // be less than or equal to the max_thread_count here.
             let target = (thread_count + 1).min(context.max_thread_count);
             let current_iops = instance_state.current_baseline_iops;
             let (min_target_iops, validation_after) = if self.cfg.scale_up_min_gain > 0.0 {
@@ -1648,7 +1649,8 @@ mod tests {
             );
         }
 
-        // Validation tick settles the scale-up without proposing another action.
+        // Validation tick settles the scale-up without proposing another
+        // action.
         let t_settle = t_apply + Duration::from_secs(1);
         assert_eq!(
             engine.evaluate(&instance, &context_at(t_settle)).await,

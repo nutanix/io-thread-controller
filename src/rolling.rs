@@ -199,7 +199,8 @@ impl RollingMetrics {
 
     fn totals(&self, window: Duration) -> Option<(u64, u64, u64)> {
         let newest = self.samples.back()?.wall_ts;
-        // Same as trim: a failed checked_sub means "include all retained samples".
+        // Same as trim: a failed checked_sub means "include all retained
+        // samples".
         let cutoff = newest.checked_sub(window);
         let mut io_ops = 0u64;
         let mut cpu_ns = 0u64;
