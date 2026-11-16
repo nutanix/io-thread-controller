@@ -92,12 +92,12 @@ impl Path {
     }
 }
 
-impl<T> From<&T> for Path
+impl<T> From<T> for Path
 where
-    T: AsRef<OsStr> + ?Sized,
+    T: AsRef<OsStr>,
 {
-    fn from(value: &T) -> Self {
-        Self::new(value)
+    fn from(value: T) -> Self {
+        Self::new(&value)
     }
 }
 
