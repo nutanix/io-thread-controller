@@ -3,7 +3,11 @@
 //
 // Author: Leonardo Forchini <leonardo.forchini@nutanix.com>
 //
-//! `tempfile::TempDir` wrapper which controls the prefix of `util::Path`s.
+//! `tempfile::TempDir` wrapper which controls the prefix of
+//! `crate::path::Path`s. This is intended to allow unit tests to be run in
+//! parallel with independent path prefixes. Each test is able to get its own
+//! `TempDir` which `Path`s will implicitly treat as their root and can use as
+//! their working directories.
 
 use std::{cell::RefCell, path::PathBuf};
 
@@ -14,7 +18,7 @@ thread_local! {
 }
 
 /// Scoped root override for tests that access absolute paths through
-/// `util::Path`.
+/// `crate::path::Path`.
 pub(crate) struct RootOverride {
     previous: Option<std::path::PathBuf>,
 }
@@ -27,14 +31,15 @@ impl Drop for RootOverride {
     }
 }
 
-/// Override the root used by `util::Path` on the current test thread.
-pub(crate) fn override_root(root: impl Into<PathBuf>) -> RootOverride {
+/// Override the root used by new `crate::path::Path`s on the current test
+/// thread. Any new absolute `Path`s will start with `"{root}/"`.
+fn override_root(root: impl Into<PathBuf>) -> RootOverride {
     let previous = ROOT_OVERRIDE.with(|slot| slot.replace(Some(root.into())));
     RootOverride { previous }
 }
 
-/// Temporary mock root installed as the current test thread's `util::Path`
-/// prefix.
+/// Temporary mock root installed as the current test thread's
+/// `crate::util::Path` prefix.
 pub(crate) struct MockDir {
     path: std::path::PathBuf,
     _root_override: RootOverride,
