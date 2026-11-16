@@ -446,7 +446,7 @@ mod tests {
     /// Test that domain XML detection accepts virtio-scsi model
     /// variants and rejects others.
     #[test]
-    fn xml_matches_virtio_scsi_variants() {
+    fn test_libvirt_xml_matches_virtio_scsi_variants() {
         let a = r#"<controller type='scsi' index='0' model='virtio-scsi'>"#;
         let b = r#"<controller type="scsi" index="0" model="virtio-scsi"/>"#;
         let c = r#"<controller type='scsi' model='lsi'/>"#;
@@ -459,7 +459,7 @@ mod tests {
 
     /// Test that a QMP success envelope yields the return payload.
     #[test]
-    fn parse_envelope_extracts_return() {
+    fn test_libvirt_qmp_return_envelope_yields_the_payload_unchanged() {
         let body = r#"{"return":{"foo":42}}"#;
         let v = parse_qmp_envelope("query", body).unwrap();
         assert_eq!(v.get(), r#"{"foo":42}"#);
@@ -468,7 +468,7 @@ mod tests {
     /// Test that a QMP error envelope becomes a typed error with
     /// class/desc.
     #[test]
-    fn parse_envelope_surfaces_qmp_error() {
+    fn test_libvirt_qmp_error_envelope_preserves_class_and_desc() {
         let body = r#"{"error":{"class":"GenericError","desc":"boom"}}"#;
         let err = parse_qmp_envelope("query", body).unwrap_err();
         match err {
@@ -482,7 +482,7 @@ mod tests {
 
     /// Test that blockstats counters are summed across disks.
     #[test]
-    fn parse_blockstats_sums_across_devices() {
+    fn test_libvirt_blockstats_sums_devices() {
         let body = r#"[
             {"stats": {
                 "rd_operations": 100,
@@ -512,7 +512,7 @@ mod tests {
 
     /// Test that empty blockstats parses as unavailable/`None`.
     #[test]
-    fn parse_blockstats_empty_returns_unavailable() {
+    fn test_libvirt_blockstats_empty_array_is_none() {
         let p = parse_blockstats("[]").unwrap();
         assert!(p.is_none());
     }

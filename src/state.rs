@@ -137,7 +137,7 @@ mod tests {
     /// Test that managed/unmanaged sets save and reload from a single
     /// JSON file.
     #[rstest]
-    fn ownership_round_trips_in_one_file(#[from(mockdir)] _md: MockDir) {
+    fn test_state_disjoint_ownership_round_trips_in_one_file(#[from(mockdir)] _md: MockDir) {
         let store = VmStateStore::new(Path::new("/ownership.json"));
         let mut expected = VmOwnership::default();
         expected.record("managed", true).unwrap();
@@ -155,7 +155,7 @@ mod tests {
 
     /// Test that a missing ownership file loads as empty/default state.
     #[rstest]
-    fn missing_state_uses_defaults(#[from(mockdir)] _md: MockDir) {
+    fn test_state_uses_defaults(#[from(mockdir)] _md: MockDir) {
         assert_eq!(
             VmStateStore::new(Path::new("/missing.json"))
                 .load()
@@ -167,7 +167,7 @@ mod tests {
     /// Test that a VM listed as both managed and unmanaged is rejected
     /// on load.
     #[rstest]
-    fn overlapping_classifications_are_rejected(#[from(mockdir)] _md: MockDir) {
+    fn test_state_overlapping_ownership_is_rejected(#[from(mockdir)] _md: MockDir) {
         let path = Path::new("/ownership.json");
         std::fs::write(
             &path,
