@@ -1086,8 +1086,7 @@ mod tests {
         engines::{EngineTickContext, ScalingEngine},
         instance::{InstanceClient, ThreadPoolSnapshot},
         per_vm_log::PerVmLog,
-        test::MockDir,
-        test::mockdir::mockdir,
+        test::{MockDir, mockdir::mockdir},
     };
     use tracing_subscriber::layer::SubscriberExt;
 
