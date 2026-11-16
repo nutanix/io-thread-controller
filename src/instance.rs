@@ -810,7 +810,7 @@ mod tests {
     /// Test that a successful client snapshot updates
     /// alive/thread_count state.
     #[tokio::test]
-    async fn refresh_state_applies_successful_snapshot() {
+    async fn test_instance_refresh_state_applies_successful_snapshot() {
         let instance = Instance::new(
             "vm-ok".to_string(),
             Path::new(""),
@@ -826,7 +826,7 @@ mod tests {
     /// Test that client errors mark the instance dead and close the
     /// client.
     #[tokio::test]
-    async fn refresh_state_marks_failed_instances_dead_and_closes() {
+    async fn test_instance_refresh_marks_failed_instances_dead_and_closes() {
         let closed = Arc::new(AtomicBool::new(false));
         let instance = Instance::new(
             "vm-bad".to_string(),
@@ -844,7 +844,7 @@ mod tests {
 
     /// Test that `Display` for an instance prints the bare VM id.
     #[test]
-    fn display_trims_instance_id() {
+    fn test_display_trims_instance_id() {
         let instance = Instance::new(
             "  vm-1  ".to_string(),
             Path::new(""),
@@ -879,7 +879,7 @@ mod tests {
     /// Test that two workers sharing a name still get independent
     /// CPU-delta util samples.
     #[test]
-    fn duplicate_worker_names_keep_independent_deltas() {
+    fn test_util_is_tick_delta_divided_by_wall_ticks() {
         let previous = vec![task(10, "worker", 100), task(11, "worker", 200)];
         let current = vec![task(11, "worker", 400), task(10, "worker", 200)];
 
@@ -892,7 +892,7 @@ mod tests {
     /// Test that a newly appeared worker does not spike util from
     /// lifetime counters.
     #[test]
-    fn new_worker_starts_without_a_lifetime_spike() {
+    fn test_util_drops_unmatched_tasks() {
         let previous = vec![task(10, "worker0", 100)];
         let current = vec![task(10, "worker0", 200), task(11, "worker1", 900_000)];
 
