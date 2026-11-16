@@ -42,12 +42,12 @@ use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
     config::ConfigError,
     instance::{Instance, InstanceClient, InstancePerfSample, ThreadPoolSnapshot},
-    path::PrefixedPath,
+    path::Path,
 };
 
 const BACKEND_NAME: &str = "fake";
 
-fn build_fake_backend(dir: &PrefixedPath) -> Result<Box<dyn Backend>, BackendClientError> {
+fn build_fake_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
     Ok(Box::new(FakeBackend::from_config_dir(dir)?))
 }
 
@@ -62,12 +62,12 @@ static FAKE_BACKEND: BackendRegistration = BackendRegistration {
 #[serde(deny_unknown_fields)]
 struct FakeConfig {
     /// Directory of `<vm-id>.json` files and `calls.json`.
-    state_dir: PrefixedPath,
+    state_dir: Path,
 }
 
 impl FakeConfig {
     /// Read `fake.json` when it exists.
-    fn from_dir(dir: &PrefixedPath) -> Result<Option<Self>, ConfigError> {
+    fn from_dir(dir: &Path) -> Result<Option<Self>, ConfigError> {
         let path = dir.join("fake.json");
         if !path.exists() {
             return Ok(None);
@@ -118,7 +118,7 @@ pub struct FakeBackend {
 
 impl FakeBackend {
     /// Build from `<dir>/fake.json`, or an empty inventory when it is absent.
-    pub fn from_config_dir(dir: &PrefixedPath) -> Result<Self, ConfigError> {
+    pub fn from_config_dir(dir: &Path) -> Result<Self, ConfigError> {
         Ok(Self {
             cfg: FakeConfig::from_dir(dir)?,
         })
@@ -138,7 +138,7 @@ impl Backend for FakeBackend {
         discover_vms(&cfg.state_dir)
     }
 
-    fn watch_paths(&self) -> Vec<PrefixedPath> {
+    fn watch_paths(&self) -> Vec<Path> {
         self.cfg
             .as_ref()
             .map(|cfg| vec![cfg.state_dir.clone()])
@@ -148,7 +148,7 @@ impl Backend for FakeBackend {
 
 /// Load every `<vm-id>.json` file in `state_dir`.
 #[tracing::instrument(skip(state_dir), fields(directory = %state_dir))]
-fn discover_vms(state_dir: &PrefixedPath) -> Vec<Arc<Instance>> {
+fn discover_vms(state_dir: &Path) -> Vec<Arc<Instance>> {
     let entries = fs::read_dir(state_dir).expect("fake backend state directory is not readable");
     let mut instances = Vec::new();
     for entry in entries.flatten() {
@@ -169,7 +169,7 @@ fn discover_vms(state_dir: &PrefixedPath) -> Vec<Arc<Instance>> {
         };
         instances.push(Arc::new(Instance::new(
             id.to_string(),
-            PrefixedPath::new(id),
+            Path::new(id),
             0,
             client,
         )));
