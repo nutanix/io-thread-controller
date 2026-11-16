@@ -249,6 +249,8 @@ mod tests {
 
     /// Test that rolling IOPS/CPU-per-IO rates use real elapsed time
     /// between samples.
+    // TODO determine if it's ok to have iops_over with a longer Duration
+    // than wall_ns.
     #[test]
     fn test_rolling_rates_use_real_elapsed_time() {
         let mut metrics = RollingMetrics::new();
