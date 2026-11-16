@@ -534,7 +534,7 @@ mod tests {
     /// `ConfigError::SerdeJson`.
     #[rstest]
     fn test_config_load_rejects_unknown_fields(#[from(mockdir)] _mockdir: MockDir) {
-        let path = PrefixedPath::new("/config");
+        let path = Path::new("/config");
         std::fs::write(
             &path,
             r#"{
