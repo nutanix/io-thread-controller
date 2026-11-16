@@ -2196,7 +2196,7 @@ mod tests {
     }
 
     /// Write a valid pressure file.
-    fn write_pressure_file(path: PrefixedPath, avg10: f32) {
+    fn write_pressure_file(path: Path, avg10: f32) {
         let p: &std::path::Path = &path;
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -2214,9 +2214,9 @@ mod tests {
             mem in 0.0f32..100.0,
         ) {
             let _mockdir = MockDir::new();
-            write_pressure_file(PrefixedPath::new("/proc/pressure/cpu"), cpu);
-            write_pressure_file(PrefixedPath::new("/proc/pressure/io"), io);
-            write_pressure_file(PrefixedPath::new("/proc/pressure/memory"), mem);
+            write_pressure_file(Path::new("/proc/pressure/cpu"), cpu);
+            write_pressure_file(Path::new("/proc/pressure/io"), io);
+            write_pressure_file(Path::new("/proc/pressure/memory"), mem);
 
             let sample = read_psi_sample();
             // psi_content formats with two decimals; procfs parses as f32 then casts to f64
@@ -2238,13 +2238,13 @@ mod tests {
         ) {
             let _mockdir = MockDir::new();
             if let Some(v) = cpu_opt {
-                write_pressure_file(PrefixedPath::new("/proc/pressure/cpu"), v);
+                write_pressure_file(Path::new("/proc/pressure/cpu"), v);
             }
             if let Some(v) = io_opt {
-                write_pressure_file(PrefixedPath::new("/proc/pressure/io"), v);
+                write_pressure_file(Path::new("/proc/pressure/io"), v);
             }
             if let Some(v) = mem_opt {
-                write_pressure_file(PrefixedPath::new("/proc/pressure/memory"), v);
+                write_pressure_file(Path::new("/proc/pressure/memory"), v);
             }
 
             let sample = read_psi_sample();
