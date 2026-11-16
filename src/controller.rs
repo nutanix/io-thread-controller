@@ -1280,7 +1280,9 @@ mod tests {
     #[cfg(feature = "threshold-engine")]
     #[rstest]
     #[tokio::test]
-    async fn test_controller_revert_arms_cooldown_blocking_immediate_retry(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_controller_revert_arms_cooldown_blocking_immediate_retry(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let cfg = Config {
             vm_state_path: Path::new("/ownership.json"),
             cooldown_secs: 30,
@@ -1563,7 +1565,9 @@ mod tests {
     /// and removes disappeared ones.
     #[rstest]
     #[tokio::test]
-    async fn test_constroller_sync_instances_adds_retains_and_removes(#[from(mockdir)] _mockdir: MockDir) {
+    async fn test_constroller_sync_instances_adds_retains_and_removes(
+        #[from(mockdir)] _mockdir: MockDir,
+    ) {
         let added = Arc::new(AtomicUsize::new(0));
         let removed = Arc::new(AtomicUsize::new(0));
         let evaluated = Arc::new(AtomicUsize::new(0));
