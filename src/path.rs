@@ -75,9 +75,9 @@ static ROOT_PATH: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
     )
 });
 
-/// Returns the path new `util::Path`s will have prefixed. In non-test
-/// configurations, this will be either `/` or the contents of the
-/// `IO_THREAD_CONTROLLER_ROOT_PATH` env var.
+/// Returns the prefix that will be applied to new `crate::path::Path`s. In
+/// non-test configurations, this will be either `/` or the contents of the
+///`IO_THREAD_CONTROLLER_ROOT_PATH` env var.
 ///
 /// In test configurations, this may differ per thread to support concurrently
 /// running unit tests.
