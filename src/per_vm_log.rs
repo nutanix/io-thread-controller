@@ -63,7 +63,7 @@ impl PerVmLog {
     }
 
     /// Return the log file of `vm`, or `None` while per-VM files are disabled.
-    pub fn path(&self, vm: &str) -> Option<PrefixedPath> {
+    pub fn path(&self, vm: &str) -> Option<Path> {
         let name: String = vm
             .chars()
             .map(|ch| {
