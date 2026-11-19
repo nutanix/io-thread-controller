@@ -5,14 +5,15 @@
 
 import fcntl
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-from harness.common import physical
+from harness.common import physical, write_json
 
 DEFAULT_VM = "vm-a"
 STATE_DIR = "/var/fake"
+CALLS_PATH = "/var/fake/calls.json"
+BACKEND_CONFIG_DIR = "/etc/io-thread-controller.d/backends"
 OWNERSHIP_FILE = "/run/io-thread-controller/vm-ownership.json"
 
 
@@ -24,6 +25,12 @@ class FakeBackend:
         self.root = root
         physical(root, STATE_DIR).mkdir(parents=True, exist_ok=True)
         self.state_dir = physical(root, STATE_DIR)
+        self.calls_path = physical(root, CALLS_PATH)
+        self.calls_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(
+            physical(root, BACKEND_CONFIG_DIR) / "fake.json",
+            {"state_dir": STATE_DIR, "calls_path": CALLS_PATH},
+        )
         self.default_vm = DEFAULT_VM
         self.add_vm(DEFAULT_VM)
 
@@ -88,14 +95,14 @@ class FakeBackend:
 
     def clear_calls(self) -> None:
         """Forget recorded ``set_thread_count`` calls for every VM."""
-        path = self.state_dir / "calls.json"
+        path = self.calls_path
         if path.exists():
             path.unlink()
 
     def calls(self, vm: str | None = None) -> list[int]:
         """Thread-count targets ``set_thread_count`` recorded, in order."""
         vm_id = vm or self.default_vm
-        path = self.state_dir / "calls.json"
+        path = self.calls_path
         if not path.exists():
             return []
         recorded = []
@@ -116,20 +123,31 @@ class FakeBackend:
 
     def _read(self, vm_id: str) -> Any:
         """Get the contents of the given VM's JSON file."""
-        return json.loads(self._vm_path(vm_id).read_text())
+        path = self._vm_path(vm_id)
+        with open(path, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            lock.seek(0)
+            try:
+                data = json.load(lock)
+            except json.JSONDecodeError:
+                data = {}
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return data
 
     def _update(self, vm_id: str, **fields: Any) -> None:
-        """Update the contents of ``vm_id`` with ``fields`` atomically."""
+        """Update the contents of ``vm_id`` with ``fields``."""
         path = self._vm_path(vm_id)
-        lock_path = path.with_suffix(".lock")
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock_path, "a+") as lock:
+        with open(path, "a+") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            data = {}
-            if path.exists():
-                data = json.loads(path.read_text())
+            lock.seek(0)
+            try:
+                data = json.load(lock)
+            except json.JSONDecodeError:
+                data = {}
             data.update(fields)
-            temporary = path.with_suffix(".json.tmp-pytest")
-            temporary.write_text(json.dumps(data))
-            os.replace(temporary, path)
+            lock.seek(0)
+            lock.truncate()
+            json.dump(data, lock)
+            lock.flush()
             fcntl.flock(lock, fcntl.LOCK_UN)
