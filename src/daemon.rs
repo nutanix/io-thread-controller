@@ -24,7 +24,7 @@ use crate::{
     dbus,
     engines::ScalingEngine,
     instance::Instance,
-    util::Path,
+    path::Path,
 };
 
 #[derive(Error, Debug)]

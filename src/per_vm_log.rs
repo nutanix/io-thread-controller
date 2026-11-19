@@ -26,7 +26,7 @@ use tracing::{
 };
 use tracing_subscriber::{EnvFilter, Layer, layer::Context};
 
-use crate::util::Path;
+use crate::path::Path;
 
 /// Default per-VM log directory.
 pub const PER_VM_LOG_DIR: &str = "/var/log/io-thread-controller/vms";

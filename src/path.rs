@@ -9,7 +9,7 @@
 use std::{
     convert::Infallible,
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fmt::{self, Debug},
     ops::Deref,
     str::FromStr,
@@ -19,7 +19,7 @@ use std::{
 use glob;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     path: std::path::PathBuf,
 }
@@ -92,27 +92,12 @@ impl Path {
     }
 }
 
-impl From<&str> for Path {
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<String> for Path {
-    fn from(s: String) -> Self {
-        Self::new(&s)
-    }
-}
-
-impl From<&OsStr> for Path {
-    fn from(s: &OsStr) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<OsString> for Path {
-    fn from(s: OsString) -> Self {
-        Self::new(&s)
+impl<T> From<T> for Path
+where
+    T: AsRef<OsStr>,
+{
+    fn from(value: T) -> Self {
+        Self::new(&value)
     }
 }
 
@@ -121,40 +106,6 @@ impl FromStr for Path {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Self::new(s))
-    }
-}
-
-#[macro_export]
-macro_rules! path {
-    ( $x: ident, $p: expr) => {
-        pub static $x: std::sync::LazyLock<$crate::util::Path> =
-            std::sync::LazyLock::new(|| $crate::util::Path::new($p));
-        impl AsRef<std::path::Path> for $x {
-            fn as_ref(&self) -> &std::path::Path {
-                &self
-            }
-        }
-        impl AsRef<std::ffi::OsStr> for $x {
-            fn as_ref(&self) -> &std::ffi::OsStr {
-                self.as_os_str()
-            }
-        }
-    };
-}
-
-pub(crate) trait ProcessExt {
-    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process>;
-}
-
-impl ProcessExt for procfs::process::Process {
-    /// `/proc/<pid>` after applying [`IO_THREAD_CONTROLLER_ROOT_PATH`].
-    ///
-    /// `procfs::process::Process::new` always opens the real `/proc`. Callers
-    /// that should honor the mock root pass this to create the process.
-    fn from_pid(pid: i32) -> procfs::ProcResult<procfs::process::Process> {
-        let path = Path::new(&format!("/proc/{pid}"));
-        let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
-        Self::new_with_root(path)
     }
 }
 

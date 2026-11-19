@@ -17,7 +17,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::util::Path;
+use crate::path::Path;
 
 #[derive(Debug, Error)]
 pub enum StateError {

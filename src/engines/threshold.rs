@@ -22,7 +22,7 @@ use crate::{
         ScalingEngine,
     },
     instance::Instance,
-    util::Path,
+    path::Path,
 };
 
 /// Registry and configuration name of the threshold engine.
@@ -926,10 +926,7 @@ mod tests {
     use rstest::{fixture, rstest};
     use test_log::test;
 
-    use super::{
-        InstanceState, PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls,
-        log_performance_revert,
-    };
+    use super::*;
     use crate::{
         backends::BackendClientError,
         config::PollPeriod,
@@ -937,7 +934,6 @@ mod tests {
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
-        util::Path,
     };
 
     #[derive(Clone)]

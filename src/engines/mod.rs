@@ -16,7 +16,7 @@ use crate::{
     backends::BackendClientError,
     config::{ConfigError, PollConverter},
     instance::Instance,
-    util::Path,
+    path::Path,
 };
 
 #[cfg(feature = "threshold-engine")]
