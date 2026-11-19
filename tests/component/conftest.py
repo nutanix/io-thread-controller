@@ -7,6 +7,7 @@
 
 import pytest
 from harness.common import built_binary
+from harness.controller import Controller
 from harness.dbus import DBusServer
 from harness.json_backend import JsonBackend
 from harness.mockfs import MockProc
@@ -33,3 +34,12 @@ def mock_proc(tmp_path, dbus_server):
     proc = MockProc(tmp_path, built_binary("mockfsd"), dbus_server)
     yield proc
     proc.stop()
+
+
+@pytest.fixture
+def controller(tmp_path, fake_backend, dbus_server):
+    """Start up a new `io-thread-controller`."""
+    del fake_backend
+    launched = Controller(tmp_path, built_binary("io-thread-controller"), dbus_server)
+    yield launched
+    launched.stop()
