@@ -1573,8 +1573,8 @@ mod tests {
         );
     }
 
-    /// Test that percent fields serde as human percents on the wire and
-    /// fractions in memory.
+    /// Test that percent fields serde as human percents in JSON and fractions
+    /// in memory.
     #[test]
     fn test_percent_wire_format_round_trips() {
         let config: ThresholdConfig =

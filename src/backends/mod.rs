@@ -409,8 +409,8 @@ mod tests {
         std::iter::from_fn(|| listener.accept().ok()).count()
     }
 
-    /// Test that discovery identifies a control-socket peer once and does
-    /// not reconnect on later passes until the socket is rebound.
+    /// Test that discovery identifies a control-socket peer once and does not
+    /// reconnect on later passes until the socket is rebound.
     #[tokio::test]
     async fn test_discovery_reuses_identified_control_socket_peer() {
         let socket_dir = tempfile::tempdir().unwrap();
