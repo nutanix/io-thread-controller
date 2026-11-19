@@ -137,7 +137,7 @@ mod tests {
     /// Test that managed/unmanaged sets save and reload from a single
     /// JSON file.
     #[rstest]
-    fn ownership_round_trips_in_one_file(mockdir: MockDir) {
+    fn ownership_round_trips_in_one_file(#[from(mockdir)] _md: MockDir) {
         let store = VmStateStore::new(Path::new("/ownership.json"));
         let mut expected = VmOwnership::default();
         expected.record("managed", true).unwrap();
@@ -146,7 +146,7 @@ mod tests {
         store.save(&expected).unwrap();
 
         assert_eq!(store.load().unwrap(), expected);
-        assert_eq!(std::fs::read_dir(mockdir.root()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(Path::new("/")).unwrap().count(), 1);
     }
 
     /// Test that a missing ownership file loads as empty/default state.
