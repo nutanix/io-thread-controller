@@ -13,7 +13,7 @@ use std::{
 
 use futures_util::future::join_all;
 use procfs::{
-    CpuPressure, Current, FromReadSI, IoPressure, KernelStats, MemoryPressure, ProcError,
+    CpuPressure, FromRead, FromReadSI, IoPressure, KernelStats, MemoryPressure, ProcError,
 };
 use serde::{Deserialize, Serialize};
 use statistical::median;
@@ -997,13 +997,13 @@ impl Controller {
 /// Read CPU, I/O, and memory pressure; unavailable values become zero.
 fn read_psi_sample() -> PsiSample {
     PsiSample {
-        cpu_some_avg10: CpuPressure::current()
+        cpu_some_avg10: CpuPressure::from_file(Path::new("/proc/pressure/cpu"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
-        io_some_avg10: IoPressure::current()
+        io_some_avg10: IoPressure::from_file(Path::new("/proc/pressure/io"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
-        memory_some_avg10: MemoryPressure::current()
+        memory_some_avg10: MemoryPressure::from_file(Path::new("/proc/pressure/memory"))
             .map(|pressure| pressure.some.avg10 as f64)
             .unwrap_or(0.0),
     }
