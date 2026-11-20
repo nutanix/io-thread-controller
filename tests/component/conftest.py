@@ -46,23 +46,6 @@ def controller(tmp_path, json_backend, dbus_server):
 
 
 @pytest.fixture
-def dbus_server(tmp_path):
-    """Create a new isolated DBus bus."""
-    server = DBusServer(tmp_path)
-    server.start()
-    yield server
-    server.stop()
-
-
-@pytest.fixture
-def mock_proc(tmp_path, dbus_server):
-    """Mount a mock proc at tmp_path controlled over the given bus."""
-    proc = MockProc(tmp_path, built_binary("mockfsd"), dbus_server)
-    yield proc
-    proc.stop()
-
-
-@pytest.fixture
 def fast_threshold():
     """Decisions land on the next eligible poll, with validation disabled."""
     return {
