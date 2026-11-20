@@ -174,7 +174,7 @@ mod tests {
         }
 
         /// Test that if there is an overlap between managed and unmanaged VMs,
-        /// the management state errors.
+        /// both saving and loading the state produces an error.
         #[test]
         fn test_state_overlapping_ownership_is_rejected(
             shared in "[a-z0-9]{1,8}",
