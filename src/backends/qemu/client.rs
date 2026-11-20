@@ -26,7 +26,6 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    ProcessExt,
     backends::{
         BackendClientError, IoThreadProperties, VqMapping,
         qemu::{
@@ -37,6 +36,7 @@ use crate::{
         },
     },
     instance::{InstanceClient, ThreadPoolSnapshot},
+    util::ProcessExt,
 };
 
 /// Wire client for an QEMU-managed VM.
