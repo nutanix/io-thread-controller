@@ -885,8 +885,8 @@ mod tests {
         );
     }
 
-    /// Test that a renamed task, an unknown tid, and a backwards counter are
-    /// all dropped.
+    /// Test that a renamed task, an unknown thread ID, and a decreasing counter
+    /// are all dropped.
     #[test]
     fn test_util_drops_unmatched_tasks() {
         let previous = vec![
