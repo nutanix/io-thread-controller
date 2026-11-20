@@ -6,7 +6,7 @@
 """Fixtures for the component testing harness."""
 
 import pytest
-from harness.common import built_binary
+from harness.common import POLL_S, built_binary
 from harness.controller import Controller
 from harness.dbus import DBusServer
 from harness.json_backend import JsonBackend
@@ -43,3 +43,43 @@ def controller(tmp_path, json_backend, dbus_server):
     launched = Controller(tmp_path, built_binary("io-thread-controller"), dbus_server)
     yield launched
     launched.stop()
+
+
+@pytest.fixture
+def fast_threshold():
+    """Decisions land on the next eligible poll, with validation disabled."""
+    return {
+        "scale_up_threshold_percent": 60,
+        "scale_down_sustain_secs": 1,
+        "max_scale_down_step": 1,
+        "scale_up_min_gain_percent": 0,
+        "scale_down_revert_drop_percent": 0,
+        "scale_validation_delay_secs": 0,
+        "scale_validation_delay_per_thread_secs": 0,
+        "post_revert_up_grace_secs": 0,
+        "post_revert_up_recovery_secs": 0,
+        "post_revert_up_backoff_max_secs": 0,
+        "scale_down_backoff_max_secs": 0,
+    }
+
+
+@pytest.fixture
+def run_controller(controller):
+    """Start the daemon on the threshold engine."""
+
+    def start(engine_config, **overrides):
+        settings = {
+            "scale_poll_secs": POLL_S,
+            "min_thread_count": 1,
+            "max_thread_count": 8,
+            "host_cpu_scale_up_ceiling_percent": 0,
+            "cooldown_secs": 0,
+        }
+        settings.update(overrides)
+        controller(
+            engine="threshold",
+            engine_config=engine_config,
+            controller_overrides=settings,
+        )
+
+    return start
