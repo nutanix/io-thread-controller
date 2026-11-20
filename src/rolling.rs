@@ -271,10 +271,10 @@ mod tests {
         /// also reset.
         #[test]
         fn test_rolling_counter_reset_replaces_baseline(
-            io0 in 1u64..,
-            io1 in 1u64..,
-            cpu0 in 1u64..,
-            cpu1 in 1u64..,
+            io0 in 0u64..,
+            io1 in 0u64..,
+            cpu0 in 0u64..,
+            cpu1 in 0u64..,
         ) {
             prop_assume!(io1 < io0 || cpu1 < cpu0);
 
