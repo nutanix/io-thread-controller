@@ -1688,28 +1688,33 @@ mod tests {
         );
     }
 
-    fn status_from_per_worker(per_worker: Vec<f64>) -> InstanceStatus {
+    /// Create an `InstanceStatus` with the given `per_worker_util`.
+    fn status_from_per_worker(per_worker_util: Vec<f64>) -> InstanceStatus {
         InstanceStatus {
-            per_worker_util: per_worker,
+            per_worker_util,
             ..Default::default()
         }
     }
 
-    fn status_with_fallback(
-        per_worker: Vec<f64>,
+    /// Create an `InstanceStatus` with both explicit per-worker utilisations
+    /// and general average thread utilisation.
+    fn status(
+        per_worker_util: Vec<f64>,
         per_thread_util: f64,
         thread_count: u32,
     ) -> InstanceStatus {
         InstanceStatus {
-            per_worker_util: per_worker,
+            per_worker_util,
             per_thread_util,
             thread_count,
             ..Default::default()
         }
     }
 
-    fn status_fallback(per_thread_util: f64, thread_count: u32) -> InstanceStatus {
-        status_with_fallback(Vec::new(), per_thread_util, thread_count)
+    /// Create an `InstanceStatus` without explicit per-worker utilisations; it
+    /// only has the general average thread utilisation.
+    fn status_with_average_util(per_thread_util: f64, thread_count: u32) -> InstanceStatus {
+        status(Vec::new(), per_thread_util, thread_count)
     }
 
     // Strategy helpers: produce finite f64 in [0,1] and small worker vecs.
@@ -1732,8 +1737,8 @@ mod tests {
             count_a in any::<u32>(),
             count_b in any::<u32>(),
         ) {
-            let s_a = status_with_fallback(per_worker.clone(), util_a, count_a);
-            let s_b = status_with_fallback(per_worker.clone(), util_b, count_b);
+            let s_a = status(per_worker.clone(), util_a, count_a);
+            let s_b = status(per_worker.clone(), util_b, count_b);
             let a = compute_cpu_stats(&s_a);
             let b = compute_cpu_stats(&s_b);
             // If the fallback inputs were taken into account, `a` and `b` would
@@ -1750,7 +1755,7 @@ mod tests {
             per_thread_util in util(),
             thread_count in 0u32..32,
         ) {
-            let s = status_fallback(per_thread_util, thread_count);
+            let s = status_with_average_util(per_thread_util, thread_count);
             let stats = compute_cpu_stats(&s);
             // Since we don't have fine-grained information, the thread
             // utilisation is treated like a `vec![per_thread_util;
@@ -1897,8 +1902,8 @@ mod tests {
             prop_assume!(count_a < count_b);
             prop_assume!(util_lo <= util_hi);
 
-            let s_lo = status_fallback(per_thread_util, count_a);
-            let s_hi = status_fallback(per_thread_util, count_b);
+            let s_lo = status_with_average_util(per_thread_util, count_a);
+            let s_hi = status_with_average_util(per_thread_util, count_b);
             prop_assert!(compute_cpu_stats(&s_hi).total_pct >= compute_cpu_stats(&s_lo).total_pct);
 
             let lo_stats = compute_cpu_stats(&s_lo);
@@ -1915,7 +1920,7 @@ mod tests {
             thread_count in 1u32..32,
         ) {
             prop_assume!(per_thread_util > 0.0);
-            let s = status_fallback(per_thread_util, thread_count);
+            let s = status_with_average_util(per_thread_util, thread_count);
             let stats = compute_cpu_stats(&s);
             prop_assert!(stats.avg_pct <= 100);
             prop_assert!(stats.median_pct <= 100);
@@ -2007,7 +2012,7 @@ mod tests {
             prop_assert_eq!(median, Some(expected_median));
         }
 
-        /// Test that the result is invariant under permutation.
+        /// Test that the summary result is invariant under permutation.
         #[test]
         fn test_vq_permutation_invariance(depths in vq_bounded()) {
             let (c0, t0, a0, m0) = summarize_vq_depths(Some(&depths));
@@ -2028,8 +2033,8 @@ mod tests {
             prop_assert_eq!(m0, m2);
         }
 
-        /// Test that duplicating any vector preserves avg/median and doubles
-        /// total via saturating arithmetic.
+        /// Test that duplicating any input vector preserves avg/median and
+        /// doubles total via saturating arithmetic.
         #[test]
         fn test_vq_duplication_preserves_avg_median(depths in vq_small()) {
             let (c0, t0, a0, m0) = summarize_vq_depths(Some(&depths));
@@ -2042,7 +2047,8 @@ mod tests {
             prop_assert_eq!(m0, m1);
         }
 
-        /// Test that total is compositional via saturating addition.
+        /// Test that the calculated total is compositional via saturating
+        /// addition.
         #[test]
         fn test_vq_concatenation_total_is_saturating_sum(
             a in vq_small(),
@@ -2063,7 +2069,8 @@ mod tests {
             prop_assert_eq!(c_concat.unwrap() as usize, a.len() + b.len());
         }
 
-        /// Test that appending an element updates count and total predictably.
+        /// Test that appending a new depth to the vector updates count and
+        /// total predictably.
         #[test]
         fn test_vq_append_increments_count_and_total(
             depths in vq_small(),
@@ -2200,7 +2207,7 @@ mod tests {
     }
 
     proptest! {
-        /// Test that `read_psi_sample` round-trips arbitrary pressure values
+        /// Test that `read_psi_sample` can load arbitrary pressure values
         /// through the file format.
         #[test]
         fn test_read_psi_sample_proptest_roundtrip(

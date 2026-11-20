@@ -281,6 +281,8 @@ mod tests {
             prop_assert!(metrics.cpu_us_per_io_over(Duration::from_secs(60)).is_none());
         }
 
+        /// Test that if the rolling counter resets, then a new baseline is
+        /// established.
         #[test]
         fn test_rolling_counter_reset_replaces_baseline(
             io0 in 0u64..,
@@ -300,6 +302,8 @@ mod tests {
             prop_assert!(metrics.is_empty());
         }
 
+        /// Test that if the rolling counter resets, then only samples under the
+        /// new baseline are kept.
         #[test]
         fn test_rolling_counter_reset_evicts_only_invalid_samples(
             io0 in 1u64..,
