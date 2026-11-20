@@ -14,7 +14,7 @@ import dbus
 import dbus.bus
 
 from harness.common import POLL_S, REPO_ROOT, physical, wait_for, write_json
-from harness.fake_backend import OWNERSHIP_FILE, STATE_DIR
+from harness.json_backend import OWNERSHIP_FILE, STATE_DIR
 
 CONFIG_FILE = "/etc/io-thread-controller.json"
 ENGINE_DIR = "/etc/io-thread-controller.d/engines"
