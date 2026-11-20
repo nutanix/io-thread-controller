@@ -1578,10 +1578,10 @@ mod tests {
         );
     }
 
-    /// Test that percent fields serde as human percents in JSON and fractions
-    /// in memory.
+    /// Test that percentages serialize as a 0-100 percentage in JSON and
+    /// deserialize to a 0-1 fraction in memory.
     #[test]
-    fn test_percent_wire_format_round_trips() {
+    fn test_percent_wire_format_serialization_deserialization() {
         let config: ThresholdConfig =
             serde_json::from_str(r#"{"scale_up_min_gain_percent":10}"#).unwrap();
         assert!((config.scale_up_min_gain - 0.10).abs() < f64::EPSILON);
@@ -1594,6 +1594,8 @@ mod tests {
         );
     }
 
+    /// Test that the duration of the validation period scales with the new
+    /// thread count.
     #[test]
     fn test_validation_polls_increase_with_target_thread_count() {
         let engine = new_engine(ThresholdConfig {
@@ -1664,7 +1666,7 @@ mod tests {
         );
     }
 
-    /// Test that a scale up is revert after the validation period if
+    /// Test that a scale up is reverted after the validation period if
     /// performance doesn't increase much.
     #[rstest]
     #[test(tokio::test)]

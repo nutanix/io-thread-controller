@@ -1634,8 +1634,8 @@ mod tests {
             .collect()
     }
 
-    /// Test that one tick refreshes state, runs the engine, and drops instances
-    /// that fail to refresh.
+    /// Test that within one tick state is refreshed, the engine is run, and
+    /// instances which failed to refresh are dropped.
     #[rstest]
     #[tokio::test]
     async fn test_controller_tick_refreshes_evaluates_and_drops_failed_instances(

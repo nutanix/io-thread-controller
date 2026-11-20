@@ -141,7 +141,8 @@ mod tests {
         assert_eq!(path.as_os_str(), OsStr::new("relative/sock"));
     }
 
-    /// Test that paths are prefixed with the contents of the env var.
+    /// Test that paths are prefixed with the `IO_THREAD_CONTROLLER_ROOT_PATH`
+    /// env var.
     #[test]
     fn test_absolute_paths_keep_absolute_form_under_default_root() {
         let env = env::var("IO_THREAD_CONTROLLER_ROOT_PATH").unwrap_or(String::from(""));

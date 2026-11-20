@@ -457,7 +457,7 @@ mod tests {
         assert!(!xml_has_virtio_scsi(d));
     }
 
-    /// Test that parsing the qmp envelope does not modify the payload.
+    /// Test that parsing the QMP envelope does not modify the payload.
     #[test]
     fn test_libvirt_qmp_return_envelope_yields_the_payload_unchanged() {
         let body = r#"{"return":{"foo":42}}"#;
