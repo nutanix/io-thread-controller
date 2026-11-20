@@ -11,24 +11,24 @@ from typing import Any
 from harness.common import physical, write_json
 
 DEFAULT_VM = "vm-a"
-STATE_DIR = "/var/fake"
-CALLS_PATH = "/var/fake/calls.json"
+STATE_DIR = "/var/json"
+CALLS_PATH = "/var/json/calls.json"
 BACKEND_CONFIG_DIR = "/etc/io-thread-controller.d/backends"
 OWNERSHIP_FILE = "/run/io-thread-controller/vm-ownership.json"
 
 
-class FakeBackend:
-    """JSON VM directory the ``fake`` backend discovers."""
+class JsonBackend:
+    """JSON VM directory the ``json`` backend discovers."""
 
     def __init__(self, root: Path):
-        """Create a new FakeBackend interface at the given path."""
+        """Create a new JsonBackend interface at the given path."""
         self.root = root
         physical(root, STATE_DIR).mkdir(parents=True, exist_ok=True)
         self.state_dir = physical(root, STATE_DIR)
         self.calls_path = physical(root, CALLS_PATH)
         self.calls_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(
-            physical(root, BACKEND_CONFIG_DIR) / "fake.json",
+            physical(root, BACKEND_CONFIG_DIR) / "json.json",
             {"state_dir": STATE_DIR, "calls_path": CALLS_PATH},
         )
         self.default_vm = DEFAULT_VM

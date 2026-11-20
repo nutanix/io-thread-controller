@@ -34,7 +34,7 @@ default = ["threshold-engine", "qemu-backend", "tui"]
 threshold-engine = []
 qemu-backend = ["dep:rustix", "dep:uuid", "dep:virt"]
 # In-process VM stand-in used by component tests. Not part of a production build.
-fake-backend = []
+json-backend = []
 # TUI (`iothread-tui` binary), enabled by default.
 tui = ["dep:anyhow", "dep:ratatui", "dep:crossterm"]
 
