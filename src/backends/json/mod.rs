@@ -52,22 +52,22 @@ use crate::{
     path::Path,
 };
 
-const BACKEND_NAME: &str = "fake";
+const BACKEND_NAME: &str = "json";
 
-/// `<backend_config_dir>/fake.json`.
+/// `<backend_config_dir>/json.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FakeConfig {
+struct JsonBackendConfig {
     /// Directory of `<vm-id>.json` files.
     state_dir: Path,
     /// Path to `calls.json`.
     calls_path: Path,
 }
 
-impl FakeConfig {
-    /// Read `fake.json` when it exists.
+impl JsonBackendConfig {
+    /// Read `json.json` when it exists.
     fn from_dir(dir: &Path) -> Result<Option<Self>, ConfigError> {
-        let path = dir.join("fake.json");
+        let path = dir.join("json.json");
         if !path.exists() {
             return Ok(None);
         }
@@ -79,8 +79,8 @@ impl FakeConfig {
 
 /// One component-test VM, as stored on disk.
 ///
-/// Missing fields take [`VmStatus::default`]: one thread, one vCPU, and
-/// `managed` so the controller may scale the VM.
+/// Missing fields take [`VmStatus::default`]: one thread, one vCPU, and zero
+/// counters. Any file present in `state_dir` is considered operator-managed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct VmStatus {
@@ -184,13 +184,13 @@ impl VmFile {
 }
 
 /// Per-VM client. Paths are real filesystem paths, not `crate::path::Path`s.
-struct FakeClient {
+struct JsonClient {
     vm: VmFile,
     calls_path: std::path::PathBuf,
 }
 
 #[async_trait]
-impl InstanceClient for FakeClient {
+impl InstanceClient for JsonClient {
     async fn set_thread_count(&self, count: u32) -> Result<(), BackendClientError> {
         let guard = self.vm.lock()?;
         let mut vm = guard.read()?;
@@ -213,7 +213,7 @@ impl InstanceClient for FakeClient {
         let vm = guard.read()?;
         if vm.fail_snapshot {
             return Err(BackendClientError::InvalidState(format!(
-                "fake snapshot failed for {}",
+                "json snapshot failed for {}",
                 self.vm.path.display()
             )));
         }
@@ -242,14 +242,14 @@ impl InstanceClient for FakeClient {
 /// Load every `<vm-id>.json` file in `state_dir`.
 #[tracing::instrument(skip(state_dir), fields(directory = %state_dir))]
 fn discover_vms(state_dir: &Path, calls_path: &Path) -> Vec<Arc<Instance>> {
-    let entries = fs::read_dir(state_dir).expect("fake backend state directory is not readable");
+    let entries = fs::read_dir(state_dir).expect("json backend state directory is not readable");
     let mut instances = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        let client = FakeClient {
+        let client = JsonClient {
             vm: VmFile::new(path.clone()),
             calls_path: calls_path.to_path_buf(),
         };
@@ -264,21 +264,21 @@ fn discover_vms(state_dir: &Path, calls_path: &Path) -> Vec<Arc<Instance>> {
 }
 
 /// Fleet adapter that discovers JSON VM files.
-pub struct FakeBackend {
-    cfg: Option<FakeConfig>,
+pub struct JsonBackend {
+    cfg: Option<JsonBackendConfig>,
 }
 
-impl FakeBackend {
-    /// Build from `<dir>/fake.json`, or an empty inventory when it is absent.
+impl JsonBackend {
+    /// Build from `<dir>/json.json`, or an empty inventory when it is absent.
     pub fn from_config_dir(dir: &Path) -> Result<Self, ConfigError> {
         Ok(Self {
-            cfg: FakeConfig::from_dir(dir)?,
+            cfg: JsonBackendConfig::from_dir(dir)?,
         })
     }
 }
 
 #[async_trait]
-impl Backend for FakeBackend {
+impl Backend for JsonBackend {
     fn name(&self) -> &'static str {
         BACKEND_NAME
     }
@@ -298,12 +298,12 @@ impl Backend for FakeBackend {
     }
 }
 
-fn build_fake_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
-    Ok(Box::new(FakeBackend::from_config_dir(dir)?))
+fn build_json_backend(dir: &Path) -> Result<Box<dyn Backend>, BackendClientError> {
+    Ok(Box::new(JsonBackend::from_config_dir(dir)?))
 }
 
 #[linkme::distributed_slice(crate::backends::BACKENDS)]
-static FAKE_BACKEND: BackendRegistration = BackendRegistration {
+static JSON_BACKEND: BackendRegistration = BackendRegistration {
     name: BACKEND_NAME,
-    build: build_fake_backend,
+    build: build_json_backend,
 };
