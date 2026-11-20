@@ -910,6 +910,7 @@ mod tests {
         );
     }
 
+    /// Create an `InstancePerfSample` with the given IO metrics.
     fn perf_sample(
         read_io: u64,
         write_io: u64,
@@ -927,6 +928,7 @@ mod tests {
         })
     }
 
+    /// Create an `InstanceStatus` with the given previous IO metrics.
     fn status_with_previous(
         now: Instant,
         read_io: u64,
@@ -1085,7 +1087,7 @@ mod tests {
             prop_assert!(s_lo.read_iops >= s_hi.read_iops);
         }
 
-        /// Test that the five counters are independent.
+        /// Test that the IO performance counters are independent.
         #[test]
         fn test_counters_are_independent(
             prev in 0u64..1_000_000,
