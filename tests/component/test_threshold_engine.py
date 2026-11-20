@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from harness.common import POLL_S, wait_for
 from harness.controller import Controller
-from harness.fake_backend import FakeBackend
+from harness.json_backend import JsonBackend
 
 BASELINE_IO = 10_000
 
@@ -38,12 +38,12 @@ def _ticked(controller: Controller) -> bool:
 
 def test_hold_below_scale_up_threshold(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     fast_threshold: Any,
 ) -> None:
     """Utilisation under the up threshold, and not low enough to shrink, holds."""
-    fake_backend.prepare_healthy_vm(threads=2, util=0.5)
+    json_backend.prepare_healthy_vm(threads=2, util=0.5)
     run_controller(fast_threshold)
 
     wait_for(
@@ -51,62 +51,62 @@ def test_hold_below_scale_up_threshold(
         timeout=10,
         description="first poll classified the held VM",
     )
-    assert fake_backend.calls() == [], controller.logs()
-    assert fake_backend.thread_count() == 2
+    assert json_backend.calls() == [], controller.logs()
+    assert json_backend.thread_count() == 2
 
 
 def test_scale_up_one_thread(
-    fake_backend: FakeBackend, run_controller: Callable, fast_threshold: Any
+    json_backend: JsonBackend, run_controller: Callable, fast_threshold: Any
 ) -> None:
     """A saturated worker grows by one and stops at the controller maximum."""
-    fake_backend.prepare_healthy_vm(threads=1, util=0.95)
+    json_backend.prepare_healthy_vm(threads=1, util=0.95)
     run_controller(fast_threshold, max_thread_count=2)
 
     wait_for(
-        lambda: fake_backend.calls() == [2],
+        lambda: json_backend.calls() == [2],
         timeout=10,
         description="scale up by one thread",
     )
-    assert fake_backend.thread_count() == 2
+    assert json_backend.thread_count() == 2
 
 
 def test_scale_down_one_thread(
-    fake_backend: FakeBackend, run_controller: Callable, fast_threshold: Any
+    json_backend: JsonBackend, run_controller: Callable, fast_threshold: Any
 ) -> None:
     """Low utilisation must last for the sustain window, then drops by one step."""
-    fake_backend.prepare_healthy_vm(threads=4, util=0.0)
+    json_backend.prepare_healthy_vm(threads=4, util=0.0)
     run_controller(fast_threshold)
 
     wait_for(
-        lambda: fake_backend.calls() == [3],
+        lambda: json_backend.calls() == [3],
         timeout=10,
         description="scale down by one thread",
     )
-    assert fake_backend.thread_count() == 3
+    assert json_backend.thread_count() == 3
 
 
 def test_scale_down_step_limit(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     fast_threshold: Any,
 ) -> None:
     """An idle pool sheds one thread per successful scale, not the whole surplus."""
-    fake_backend.prepare_healthy_vm(threads=6, util=0.0)
+    json_backend.prepare_healthy_vm(threads=6, util=0.0)
     fast_threshold["max_scale_down_step"] = 1
     run_controller(fast_threshold)
 
     wait_for(
-        lambda: fake_backend.calls() == [5, 4, 3, 2, 1],
+        lambda: json_backend.calls() == [5, 4, 3, 2, 1],
         timeout=10,
         description="step down to the controller minimum",
     )
-    assert fake_backend.thread_count() == 1, controller.logs()
+    assert json_backend.thread_count() == 1, controller.logs()
 
 
 def test_scale_up_reverts_when_iops_rate_falls(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     validating_threshold: Any,
 ) -> None:
@@ -115,58 +115,58 @@ def test_scale_up_reverts_when_iops_rate_falls(
     fast_step = 20_000
     slow_step = 200
     io = lifetime
-    fake_backend.prepare_healthy_vm(threads=2, util=0.5, io=io)
+    json_backend.prepare_healthy_vm(threads=2, util=0.5, io=io)
     run_controller(validating_threshold)
 
     wait_for(lambda: _ticked(controller), timeout=10, description="first baseline poll")
     baseline_until = time.monotonic() + POLL_S * 4
     while time.monotonic() < baseline_until:
         io += fast_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
 
-    fake_backend.set_util(0.95)
+    json_backend.set_util(0.95)
     deadline = time.monotonic() + 10
-    while fake_backend.calls() != [3] and time.monotonic() < deadline:
+    while json_backend.calls() != [3] and time.monotonic() < deadline:
         io += fast_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
-    assert fake_backend.calls() == [3], controller.logs()
+    assert json_backend.calls() == [3], controller.logs()
 
     deadline = time.monotonic() + 10
-    while fake_backend.calls()[:2] != [3, 2] and time.monotonic() < deadline:
+    while json_backend.calls()[:2] != [3, 2] and time.monotonic() < deadline:
         io += slow_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
-    assert fake_backend.calls()[:2] == [3, 2], controller.logs()
-    assert fake_backend.thread_count() == 2
+    assert json_backend.calls()[:2] == [3, 2], controller.logs()
+    assert json_backend.thread_count() == 2
 
 
 def test_scale_up_kept_when_io_gains(
-    fake_backend: FakeBackend, run_controller: Callable, validating_threshold: Any
+    json_backend: JsonBackend, run_controller: Callable, validating_threshold: Any
 ) -> None:
     """Enough extra I/O keeps the new thread and allows the next scale-up."""
-    fake_backend.prepare_healthy_vm(threads=2, util=0.95, io=BASELINE_IO)
+    json_backend.prepare_healthy_vm(threads=2, util=0.95, io=BASELINE_IO)
     run_controller(validating_threshold)
 
     wait_for(
-        lambda: fake_backend.calls() == [3],
+        lambda: json_backend.calls() == [3],
         timeout=10,
         description="scale up before validation",
     )
 
-    fake_backend.set_io_counts(BASELINE_IO * 2, 0, 0)
+    json_backend.set_io_counts(BASELINE_IO * 2, 0, 0)
     wait_for(
-        lambda: len(fake_backend.calls()) == 2,
+        lambda: len(json_backend.calls()) == 2,
         timeout=10,
         description="next scale-up after validation",
     )
-    assert fake_backend.calls() == [3, 4]
+    assert json_backend.calls() == [3, 4]
 
 
 def test_scale_down_kept_when_io_keeps_rising(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     validating_threshold: Any,
 ) -> None:
@@ -176,24 +176,24 @@ def test_scale_down_kept_when_io_keeps_rising(
     regression this backend can report, so validation must leave the new
     count in place while the counter climbs.
     """
-    fake_backend.prepare_healthy_vm(threads=4, util=0.0, io=BASELINE_IO)
+    json_backend.prepare_healthy_vm(threads=4, util=0.0, io=BASELINE_IO)
     run_controller(validating_threshold)
 
     wait_for(
-        lambda: fake_backend.calls() == [3],
+        lambda: json_backend.calls() == [3],
         timeout=10,
         description="scale down before validation",
     )
-    fake_backend.set_util(0.5)
-    fake_backend.set_io_counts(BASELINE_IO * 2, 0, 0)
+    json_backend.set_util(0.5)
+    json_backend.set_io_counts(BASELINE_IO * 2, 0, 0)
     time.sleep(POLL_S * 5)
-    assert fake_backend.calls() == [3], controller.logs()
-    assert fake_backend.thread_count() == 3
+    assert json_backend.calls() == [3], controller.logs()
+    assert json_backend.thread_count() == 3
 
 
 def test_scale_down_reverts_when_iops_rate_falls(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     validating_threshold: Any,
 ) -> None:
@@ -215,31 +215,31 @@ def test_scale_down_reverts_when_iops_rate_falls(
     config = dict(validating_threshold)
     config["scale_down_sustain_secs"] = POLL_S * 5
     io = lifetime
-    fake_backend.prepare_healthy_vm(threads=4, util=0.0, io=io)
+    json_backend.prepare_healthy_vm(threads=4, util=0.0, io=io)
     run_controller(config)
 
     deadline = time.monotonic() + 10
-    while not fake_backend.calls() and time.monotonic() < deadline:
+    while not json_backend.calls() and time.monotonic() < deadline:
         io += fast_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
-    assert fake_backend.calls() == [3], controller.logs()
+    assert json_backend.calls() == [3], controller.logs()
     count_at_scale = io
 
-    fake_backend.set_util(0.95)
+    json_backend.set_util(0.95)
     deadline = time.monotonic() + 10
-    while fake_backend.calls()[:2] != [3, 4] and time.monotonic() < deadline:
+    while json_backend.calls()[:2] != [3, 4] and time.monotonic() < deadline:
         io += slow_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
     assert io > count_at_scale
-    assert fake_backend.calls()[:2] == [3, 4], controller.logs()
-    assert fake_backend.thread_count() == 4
+    assert json_backend.calls()[:2] == [3, 4], controller.logs()
+    assert json_backend.thread_count() == 4
 
 
 def test_scale_up_kept_when_iops_rate_rises(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     validating_threshold: Any,
 ) -> None:
@@ -255,7 +255,7 @@ def test_scale_up_kept_when_iops_rate_rises(
     baseline_step = 20_000
     gained_step = 40_000
     io = lifetime
-    fake_backend.prepare_healthy_vm(threads=2, util=0.5, io=io)
+    json_backend.prepare_healthy_vm(threads=2, util=0.5, io=io)
     run_controller(validating_threshold)
 
     wait_for(
@@ -266,45 +266,45 @@ def test_scale_up_kept_when_iops_rate_rises(
     baseline_until = time.monotonic() + POLL_S * 4
     while time.monotonic() < baseline_until:
         io += baseline_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
-    assert fake_backend.calls() == [], controller.logs()
+    assert json_backend.calls() == [], controller.logs()
 
-    fake_backend.set_util(0.95)
+    json_backend.set_util(0.95)
     deadline = time.monotonic() + 10
-    while fake_backend.calls() != [3] and time.monotonic() < deadline:
+    while json_backend.calls() != [3] and time.monotonic() < deadline:
         io += baseline_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
-    assert fake_backend.calls() == [3], controller.logs()
+    assert json_backend.calls() == [3], controller.logs()
     count_at_scale = io
 
     settled = time.monotonic() + POLL_S * 8
     while time.monotonic() < settled:
         io += gained_step
-        fake_backend.set_io_counts(io, 0, 0)
+        json_backend.set_io_counts(io, 0, 0)
         time.sleep(POLL_S)
     assert count_at_scale < io < count_at_scale + count_at_scale // 10
-    calls = fake_backend.calls()
+    calls = json_backend.calls()
     assert calls[0] == 3 and calls[1] == 4, controller.logs()
     assert 2 not in calls, controller.logs()
 
 
 def test_scale_down_kept_when_io_holds(
     controller: Controller,
-    fake_backend: FakeBackend,
+    json_backend: JsonBackend,
     run_controller: Callable,
     validating_threshold: Any,
 ) -> None:
     """A scale-down whose I/O stays inside the drop allowance is left in place."""
-    fake_backend.prepare_healthy_vm(threads=4, util=0.0, io=BASELINE_IO)
+    json_backend.prepare_healthy_vm(threads=4, util=0.0, io=BASELINE_IO)
     run_controller(validating_threshold)
 
     wait_for(
-        lambda: fake_backend.calls() == [3],
+        lambda: json_backend.calls() == [3],
         timeout=10,
         description="scale down before validation",
     )
-    fake_backend.set_util(0.5)
-    assert fake_backend.calls() == [3], controller.logs()
-    assert fake_backend.thread_count() == 3
+    json_backend.set_util(0.5)
+    assert json_backend.calls() == [3], controller.logs()
+    assert json_backend.thread_count() == 3
