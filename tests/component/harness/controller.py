@@ -14,7 +14,7 @@ import dbus
 import dbus.bus
 
 from harness.common import POLL_S, REPO_ROOT, physical, wait_for, write_json
-from harness.json_backend import OWNERSHIP_FILE, STATE_DIR
+from harness.json_backend import CALLS_PATH, OWNERSHIP_FILE, STATE_DIR
 
 CONFIG_FILE = "/etc/io-thread-controller.json"
 ENGINE_DIR = "/etc/io-thread-controller.d/engines"
@@ -25,7 +25,7 @@ CONTROLLER_INTERFACE = "com.nutanix.io_thread_controller1"
 
 
 class Controller:
-    """Starts ``io-thread-controller`` against the fake backend."""
+    """Starts ``io-thread-controller`` against the JSON backend."""
 
     def __init__(self, root: Path, binary: Path, dbus_server: dbus.Bus):
         """Create a new ``io-thread-controller`` on the given bus."""
@@ -63,8 +63,8 @@ class Controller:
             engine_config,
         )
         write_json(
-            physical(self.root, BACKEND_DIR) / "fake.json",
-            {"state_dir": STATE_DIR},
+            physical(self.root, BACKEND_DIR) / "json.json",
+            {"state_dir": STATE_DIR, "calls_path": CALLS_PATH},
         )
         self.start()
 
