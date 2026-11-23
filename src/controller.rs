@@ -1580,7 +1580,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
+        let (per_vm_log, _guard) = capture_per_vm_log();
         let closed = Arc::new(AtomicUsize::new(0));
 
         let first = instance("vm-a", 1, Arc::clone(&closed));
@@ -1610,18 +1610,13 @@ mod tests {
     }
 
     /// Route this thread's per-VM events to files in a temporary directory.
-    fn capture_per_vm_log() -> (
-        PerVmLog,
-        tempfile::TempDir,
-        tracing::subscriber::DefaultGuard,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
+    fn capture_per_vm_log() -> (PerVmLog, tracing::subscriber::DefaultGuard) {
         let per_vm_log = PerVmLog::default();
-        per_vm_log.set_dir(Some(Path::new(dir.path())));
+        per_vm_log.set_dir(Some(Path::new("/per-vm")));
         let guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(per_vm_log.clone()),
         );
-        (per_vm_log, dir, guard)
+        (per_vm_log, guard)
     }
 
     /// Return the records of one VM's per-VM log that carry an `event`
@@ -1659,7 +1654,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let (per_vm_log, _log_dir, _guard) = capture_per_vm_log();
+        let (per_vm_log, _guard) = capture_per_vm_log();
 
         let closed = Arc::new(AtomicUsize::new(0));
         let ok = instance("ok", 4, Arc::clone(&closed));
