@@ -363,6 +363,10 @@ pub fn dump_default_config() -> String {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
+    use crate::test::{MockDir, mockdir::mockdir};
+
     use super::*;
 
     /// Test that default `Config` validates and uses the threshold
@@ -474,10 +478,9 @@ mod tests {
 
     /// Test that minimal valid JSON loads into `Config` with the
     /// expected engine, poll, and paths.
-    #[test]
-    fn load_config_round_trips_required_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
+    #[rstest]
+    fn load_config_round_trips_required_fields(#[from(mockdir)] _md: MockDir) {
+        let path = Path::new("/config.json");
         std::fs::write(
             &path,
             r#"{
@@ -490,7 +493,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg: Config = load_or_default(Path::new(path.to_str().unwrap())).unwrap();
+        let cfg: Config = load_or_default(&path).unwrap();
         assert_eq!(cfg.engine, "threshold");
         assert_eq!(cfg.scale_poll_secs, 7);
         assert_eq!(
@@ -501,10 +504,9 @@ mod tests {
 
     /// Test that loading JSON with an unknown field returns
     /// `ConfigError::SerdeJson`.
-    #[test]
-    fn load_config_rejects_unknown_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
+    #[rstest]
+    fn load_config_rejects_unknown_fields(#[from(mockdir)] _md: MockDir) {
+        let path = Path::new("/config.json");
         std::fs::write(
             &path,
             r#"{

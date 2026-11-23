@@ -370,9 +370,13 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     use async_trait::async_trait;
+    use rstest::rstest;
 
     use super::*;
-    use crate::instance::ThreadPoolSnapshot;
+    use crate::{
+        instance::ThreadPoolSnapshot,
+        test::{MockDir, mockdir::mockdir},
+    };
 
     struct NullClient;
 
@@ -410,21 +414,20 @@ mod tests {
 
     /// Test that discovery identifies a control-socket peer once and does
     /// not reconnect on later passes until the socket is rebound.
+    #[rstest]
     #[tokio::test]
-    async fn test_discovery_reuses_identified_control_socket_peer() {
-        let socket_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(socket_dir.path().join("vm-a")).unwrap();
-        let socket_dir = Path::new(socket_dir.path());
-        let sock_path = socket_dir.join("vm-a").join("ctl");
+    async fn test_discovery_reuses_identified_control_socket_peer(#[from(mockdir)] _md: MockDir) {
+        std::fs::create_dir(Path::new("/vm-a")).unwrap();
+        let sock_path = Path::new("/vm-a").join("ctl");
         let mut listener = bind(&sock_path);
 
-        let instances = discover(&socket_dir).await;
+        let instances = discover(&Path::new("/")).await;
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, "vm-a");
         assert_eq!(instances[0].pid, std::process::id() as i32);
         assert_eq!(pending(&listener), 1);
 
-        assert_eq!(discover(&socket_dir).await.len(), 1);
+        assert_eq!(discover(&Path::new("/")).await.len(), 1);
         assert_eq!(pending(&listener), 0);
 
         // Keep the old socket inode alive while rebinding so the filesystem
@@ -432,18 +435,18 @@ mod tests {
         std::fs::remove_file(&sock_path).unwrap();
         let old_listener = std::mem::replace(&mut listener, bind(&sock_path));
         drop(old_listener);
-        assert_eq!(discover(&socket_dir).await.len(), 1);
+        assert_eq!(discover(&Path::new("/")).await.len(), 1);
         assert_eq!(pending(&listener), 1);
 
         drop(listener);
         std::fs::remove_file(&sock_path).unwrap();
-        assert!(discover(&socket_dir).await.is_empty());
+        assert!(discover(&Path::new("/")).await.is_empty());
         assert!(
             !PEER_CACHE
                 .lock()
                 .unwrap()
                 .keys()
-                .any(|path| path.starts_with(&socket_dir))
+                .any(|path| path.starts_with(&Path::new("/")))
         );
     }
 }

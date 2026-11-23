@@ -938,6 +938,7 @@ mod tests {
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
         path::Path,
+        test::{MockDir, mockdir::mockdir},
     };
 
     #[derive(Clone)]
@@ -1754,15 +1755,10 @@ mod tests {
 
     /// Test that a missing `threshold.json` still builds an engine with
     /// defaults.
-    #[test]
-    fn missing_config_file_uses_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+    #[rstest]
+    fn missing_config_file_uses_defaults(#[from(mockdir)] _md: MockDir) {
         let mut durations = PollPeriod::new(POLL_SECS, false).converter();
-        let engine = ThresholdEngine::from_config_dir(
-            &Path::new(dir.path().to_str().unwrap()),
-            &mut durations,
-        )
-        .unwrap();
+        let engine = ThresholdEngine::from_config_dir(&Path::new("/"), &mut durations).unwrap();
         durations.finish().unwrap();
         assert_eq!(engine.name(), super::ENGINE_NAME);
         let _ = engine.config();
