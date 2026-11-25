@@ -446,7 +446,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .keys()
-                .any(|path| path.starts_with(&Path::new("/")))
+                .any(|path| path.starts_with(Path::new("/")))
         );
     }
 }
