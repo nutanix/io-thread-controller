@@ -10,6 +10,7 @@ import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import dbus
 import dbus.bus
@@ -211,18 +212,21 @@ class MockProc:
             self._callback_service = _get_callback_service(self._dbus_address)
         return self._callback_service
 
+    def _call(self, method: str, *args: Any) -> Any:
+        assert self._iface is not None
+        with self._lock:
+            return getattr(self._iface, method)(str(self.mount), *args)
+
     def register_static(
         self,
         path: Path | str,
         content: bytes | str,
     ) -> None:
         """Register a single static file body for ``path`` on this mount."""
-        assert self._iface is not None
         if isinstance(content, str):
             content = content.encode()
         payload = dbus.ByteArray(bytes(content))
-        with self._lock:
-            self._iface.RegisterStatic(str(self.mount), str(path), payload)
+        self._call("RegisterStatic", str(path), payload)
 
     def register_sequence(
         self,
@@ -230,8 +234,6 @@ class MockProc:
         values: list[bytes | str],
     ) -> None:
         """Register successive file bodies for ``path`` on this mount."""
-        assert self._iface is not None
-
         normalized: list[bytes] = []
         for v in values:
             if isinstance(v, str):
@@ -241,8 +243,7 @@ class MockProc:
             [dbus.ByteArray(v) for v in normalized],
             signature="ay",
         )
-        with self._lock:
-            self._iface.RegisterSequence(str(self.mount), str(path), payload)
+        self._call("RegisterSequence", str(path), payload)
 
     def register_callback(
         self,
@@ -255,20 +256,15 @@ class MockProc:
         offset 0. It must be fast (<5s) and thread-safe; exceptions yield
         empty content.
         """
-        assert self._iface is not None
         svc = self._ensure_callback_service()
         svc.register(str(self.mount), str(path), callback)
-        with self._lock:
-            self._iface.RegisterCallback(str(self.mount), str(path))
+        self._call("RegisterCallback", str(path))
 
     def unregister(self, path: Path | str) -> None:
         """Remove ``path`` and any descendants from this mount."""
-        assert self._iface is not None
-
         if self._callback_service is not None:
             self._callback_service.unregister(str(self.mount), str(path))
-        with self._lock:
-            self._iface.Unregister(str(self.mount), str(path))
+        self._call("Unregister", str(path))
 
     def stop(self) -> None:
         """Unmount if possible, stop mockfsd, and close its stderr log."""

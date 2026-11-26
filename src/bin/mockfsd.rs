@@ -48,6 +48,33 @@ fn slice_content(content: &[u8], offset: u64, size: u32) -> &[u8] {
     &content[start..end]
 }
 
+fn normal_parts(path: &Path) -> impl Iterator<Item = &OsStr> + '_ {
+    path.components().filter_map(|component| match component {
+        Component::Normal(part) => Some(part),
+        _ => None,
+    })
+}
+
+fn validated_normal_parts(path: &Path) -> Result<Vec<&OsStr>, RegisterError> {
+    if !path.is_absolute() {
+        return Err(RegisterError::invalid_path(path, "path must be absolute"));
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(part) => parts.push(part),
+            _ => {
+                return Err(RegisterError::invalid_path(
+                    path,
+                    "path may only contain normal segments",
+                ));
+            }
+        }
+    }
+    Ok(parts)
+}
+
 #[derive(Debug)]
 struct OpenFile {
     ino: INodeNo,
@@ -103,10 +130,7 @@ impl Inner {
     fn register_callback(&mut self, name: &Path, callback: Arc<Callback>) {
         assert!(name.is_absolute());
         let mut parent = INodeNo::ROOT;
-        for part in name.components() {
-            let Component::Normal(part) = part else {
-                continue;
-            };
+        for part in normal_parts(name) {
             let len = u64::try_from(self.children.len()).unwrap();
             let inode = self
                 .children
@@ -122,10 +146,7 @@ impl Inner {
         assert!(name.is_absolute());
         let mut parent = INodeNo::ROOT;
         let mut target = None;
-        for part in name.components() {
-            let Component::Normal(part) = part else {
-                continue;
-            };
+        for part in normal_parts(name) {
             let Some(inode) = self.children.get(&(parent, part.to_owned())).copied() else {
                 return false;
             };
@@ -395,21 +416,7 @@ impl MockFs {
 ///  * it is an absolute path
 ///  * it does not contain any relative components (`.` or `..`)
 fn validate_registration_path(name: &Path) -> Result<(), RegisterError> {
-    if !name.is_absolute() {
-        return Err(RegisterError::invalid_path(name, "path must be absolute"));
-    }
-    for part in name.components() {
-        match part {
-            Component::RootDir | Component::Normal(_) => {}
-            _ => {
-                return Err(RegisterError::invalid_path(
-                    name,
-                    "path may only contain normal segments",
-                ));
-            }
-        }
-    }
-    Ok(())
+    validated_normal_parts(name).map(|_| ())
 }
 
 impl Filesystem for MockFs {
@@ -707,30 +714,16 @@ impl Control {
 
 fn normalize_mount_path(path: &str) -> zbus::fdo::Result<PathBuf> {
     let path = Path::new(path);
-    if !path.is_absolute() {
-        return Err(invalid_args(RegisterError::invalid_path(
-            path,
-            "path must be absolute",
-        )));
-    }
-    let mut normalized = PathBuf::from("/");
-    for part in path.components() {
-        match part {
-            Component::RootDir => {}
-            Component::Normal(part) => normalized.push(part),
-            _ => {
-                return Err(invalid_args(RegisterError::invalid_path(
-                    path,
-                    "path may only contain normal segments",
-                )));
-            }
-        }
-    }
-    if normalized == Path::new("/") {
+    let parts = validated_normal_parts(path).map_err(invalid_args)?;
+    if parts.is_empty() {
         return Err(invalid_args(RegisterError::invalid_path(
             path,
             "refusing to mount the filesystem root",
         )));
+    }
+    let mut normalized = PathBuf::from("/");
+    for part in parts {
+        normalized.push(part);
     }
     Ok(normalized)
 }
