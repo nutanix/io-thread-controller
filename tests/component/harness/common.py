@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+POLL_S = 0.2
 
 
 def physical(root: Path, logical: str) -> Path:

@@ -40,7 +40,13 @@ const TTL: Duration = Duration::from_secs(0);
 
 type Name = OsString;
 type Content = Box<[u8]>;
-type Callback = Box<dyn Fn() -> Content + Send + Sync>;
+type Callback = dyn Fn() -> Content + Send + Sync;
+
+fn slice_content(content: &[u8], offset: u64, size: u32) -> &[u8] {
+    let start = content.len().min(offset as usize);
+    let end = content.len().min(offset as usize + size as usize);
+    &content[start..end]
+}
 
 #[derive(Debug)]
 struct OpenFile {
@@ -73,7 +79,7 @@ impl std::error::Error for RegisterError {}
 
 struct Inner {
     children: HashMap<(INodeNo, Name), INodeNo>,
-    callbacks: HashMap<INodeNo, Callback>,
+    callbacks: HashMap<INodeNo, Arc<Callback>>,
     // TODO have different types for FileHandle and DirHandle
     handles: HashMap<FileHandle, OpenFile>,
     next_handle: u64,
@@ -94,7 +100,7 @@ impl Inner {
     }
 
     /// Register a callback as serving the contents of the file at `name`.
-    fn register_callback(&mut self, name: &Path, callback: Callback) {
+    fn register_callback(&mut self, name: &Path, callback: Arc<Callback>) {
         assert!(name.is_absolute());
         let mut parent = INodeNo::ROOT;
         for part in name.components() {
@@ -248,17 +254,6 @@ impl Inner {
         Some(fh)
     }
 
-    /// Get the contents of the file opened by `fh` at `offset`.
-    /// This is where file contents are determined for each new read.
-    fn read(&mut self, fh: FileHandle, offset: u64) -> Option<&[u8]> {
-        let ino = self.handles.get(&fh)?.ino;
-        if offset == 0 || self.handles.get(&fh)?.content.is_none() {
-            let content = (self.callbacks.get(&ino)?)();
-            self.handles.get_mut(&fh)?.content = Some(content);
-        }
-        self.handles.get(&fh)?.content.as_deref()
-    }
-
     /// Get the list of entries in a directory.
     fn readdir(&self, fh: FileHandle) -> Option<&Vec<(INodeNo, Name, FileType)>> {
         self.direntry.get(&fh)
@@ -293,7 +288,7 @@ impl MockFs {
     fn register_callback(
         &self,
         name: impl AsRef<Path>,
-        callback: Callback,
+        callback: Arc<Callback>,
     ) -> Result<(), RegisterError> {
         let name = name.as_ref();
         validate_registration_path(name)?;
@@ -302,6 +297,23 @@ impl MockFs {
             .expect("mockfs lock")
             .register_callback(name, callback);
         Ok(())
+    }
+
+    fn sequence_callback<I, T>(values: I) -> Arc<Callback>
+    where
+        I: IntoIterator<Item = T>,
+        I::IntoIter: Send + 'static,
+        T: Into<Vec<u8>>,
+    {
+        let values = Mutex::new(values.into_iter());
+        Arc::new(move || {
+            values
+                .lock()
+                .expect("mockfs sequence lock")
+                .next()
+                .map(|value| value.into().into_boxed_slice())
+                .unwrap_or_default()
+        })
     }
 
     /// Register the given [`Iterator`] at `name`.
@@ -315,18 +327,7 @@ impl MockFs {
         I::IntoIter: Send + 'static,
         T: Into<Vec<u8>>,
     {
-        let name = name.as_ref();
-        validate_registration_path(name)?;
-        let values = Mutex::new(values.into_iter());
-        let callback: Callback = Box::new(move || {
-            values
-                .lock()
-                .expect("mockfs sequence lock")
-                .next()
-                .map(|value| value.into().into_boxed_slice())
-                .unwrap_or_default()
-        });
-        self.register_callback(name, callback)
+        self.register_callback(name, Self::sequence_callback(values))
     }
 
     /// Register the given buffer at `name`.
@@ -335,8 +336,6 @@ impl MockFs {
         name: impl AsRef<Path>,
         value: Vec<u8>,
     ) -> Result<(), RegisterError> {
-        let name = name.as_ref();
-        validate_registration_path(name)?;
         self.register_iterator(name, vec![value].into_iter().cycle())
     }
 
@@ -346,15 +345,49 @@ impl MockFs {
         name: impl AsRef<Path>,
         values: Vec<Vec<u8>>,
     ) -> Result<(), RegisterError> {
-        let name = name.as_ref();
-        validate_registration_path(name)?;
         self.register_iterator(name, values)
     }
 
+    /// Unregister the entry at the given path.
     fn unregister(&self, name: impl AsRef<Path>) -> Result<bool, RegisterError> {
         let name = name.as_ref();
         validate_registration_path(name)?;
         Ok(self.inner.lock().expect("mockfs lock").unregister(name))
+    }
+
+    /// Clone the callback for `fh` while holding the lock.
+    /// Returns the `Arc<Callback>` to be invoked outside the lock.
+    fn callback_for(&self, fh: FileHandle) -> Result<Arc<Callback>, Errno> {
+        let inner = self.inner.lock().map_err(|_| Errno::EIO)?;
+        let open = inner.handles.get(&fh).ok_or(Errno::ENOENT)?;
+        if !inner.is_file(open.ino) {
+            return Err(Errno::ENOENT);
+        }
+        inner.callbacks.get(&open.ino).cloned().ok_or(Errno::ENOENT)
+    }
+
+    /// Try to serve from the per-handle cache without invoking the callback.
+    /// Returns `Some(bytes)` if `offset != 0` and a cached entry exists.
+    fn try_cached(&self, fh: FileHandle, offset: u64, size: u32) -> Option<Vec<u8>> {
+        let inner = self.inner.lock().ok()?;
+        if offset == 0 {
+            return None;
+        }
+
+        let open = inner.handles.get(&fh)?;
+        if !inner.is_file(open.ino) {
+            return None;
+        }
+
+        let content = open.content.as_deref()?;
+        Some(slice_content(content, offset, size).to_vec())
+    }
+
+    fn cache_content(&self, fh: FileHandle, content: Content) -> Result<(), Errno> {
+        let mut inner = self.inner.lock().map_err(|_| Errno::EIO)?;
+        let open = inner.handles.get_mut(&fh).ok_or(Errno::ENOENT)?;
+        open.content = Some(content);
+        Ok(())
     }
 }
 
@@ -452,7 +485,7 @@ impl Filesystem for MockFs {
     fn read(
         &self,
         _req: &Request,
-        ino: INodeNo,
+        _ino: INodeNo,
         fh: FileHandle,
         offset: u64,
         size: u32,
@@ -460,21 +493,26 @@ impl Filesystem for MockFs {
         _lock_owner: Option<fuser::LockOwner>,
         reply: ReplyData,
     ) {
-        let Ok(mut inner) = self.inner.lock() else {
-            reply.error(Errno::EIO);
-            return;
-        };
-        if !inner.is_file(ino) {
-            reply.error(Errno::ENOENT);
+        if let Some(cached) = self.try_cached(fh, offset, size) {
+            reply.data(&cached);
             return;
         }
-        let Some(content) = inner.read(fh, offset) else {
-            reply.error(Errno::ENOENT);
-            return;
+        let callback = match self.callback_for(fh) {
+            Ok(cb) => cb,
+            Err(errno) => {
+                reply.error(errno);
+                return;
+            }
         };
-        let start = content.len().min(offset as usize);
-        let end = content.len().min(offset as usize + size as usize);
-        reply.data(&content[start..end]);
+
+        let content = callback();
+        let sliced = slice_content(&content, offset, size).to_vec();
+        if let Err(errno) = self.cache_content(fh, content) {
+            reply.error(errno);
+            return;
+        }
+
+        reply.data(&sliced);
     }
 
     /// Read directory.
@@ -572,6 +610,13 @@ const BUS_NAME: &str = "com.nutanix.mockfs1";
 /// Object path served on [`BUS_NAME`].
 const OBJECT_PATH: &str = "/com/nutanix/mockfs1";
 
+/// Well-known name for the agent callback service (harness side).
+const CALLBACK_BUS_NAME: &str = "com.nutanix.mockfs.callback1";
+/// Object path for the agent callback service.
+const CALLBACK_OBJECT_PATH: &str = "/com/nutanix/mockfs/callback1";
+/// Interface for the agent callback service.
+const CALLBACK_INTERFACE: &str = "com.nutanix.mockfs.callback1";
+
 struct DbusControl {
     _conn: zbus::Connection,
 }
@@ -579,14 +624,64 @@ struct DbusControl {
 #[derive(Clone)]
 struct Control {
     mounts: Arc<Mutex<HashMap<PathBuf, MountedFs>>>,
+    conn: zbus::Connection,
+    handle: tokio::runtime::Handle,
 }
 
 impl Control {
     /// Create a new DBus interface.
-    fn new() -> Self {
+    fn new(conn: zbus::Connection, handle: tokio::runtime::Handle) -> Self {
         Self {
             mounts: Arc::new(Mutex::new(HashMap::new())),
+            conn,
+            handle,
         }
+    }
+
+    const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    async fn call_agent(conn: &zbus::Connection, mount: &str, path: &str) -> Vec<u8> {
+        let proxy = match zbus::Proxy::new(
+            conn,
+            CALLBACK_BUS_NAME,
+            CALLBACK_OBJECT_PATH,
+            CALLBACK_INTERFACE,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = ?e, "failed to create agent proxy");
+                return Vec::new();
+            }
+        };
+        let body = (mount.to_owned(), path.to_owned());
+        let call = proxy.call::<_, _, Vec<u8>>("GetFileContent", &body);
+        match tokio::time::timeout(Self::AGENT_TIMEOUT, call).await {
+            Ok(Ok(content)) => content,
+            Ok(Err(e)) => {
+                tracing::warn!(error = ?e, mount, path, "agent call failed");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!(mount, path, "agent call timed out");
+                Vec::new()
+            }
+        }
+    }
+
+    fn make_agent_callback(&self, mount_path: String, path: String) -> Arc<Callback> {
+        let conn = self.conn.clone();
+        let handle = self.handle.clone();
+        Arc::new(move || {
+            let mount = mount_path.clone();
+            let file = path.clone();
+            let conn = conn.clone();
+            let handle = handle.clone();
+            handle
+                .block_on(Self::call_agent(&conn, &mount, &file))
+                .into_boxed_slice()
+        })
     }
 
     /// Mount a mockdir at given path.
@@ -599,6 +694,14 @@ impl Control {
             .ok_or_else(|| {
                 zbus::fdo::Error::InvalidArgs(format!("not mounted: {}", mount_path.display()))
             })
+    }
+
+    fn with_file<F>(&self, mount_path: &str, path: &str, f: F) -> zbus::fdo::Result<()>
+    where
+        F: FnOnce(MockFs, &Path) -> Result<(), RegisterError>,
+    {
+        let fs = self.mounted_fs(mount_path)?;
+        f(fs, Path::new(path)).map_err(invalid_args)
     }
 }
 
@@ -678,9 +781,9 @@ impl Control {
         path: String,
         content: Vec<u8>,
     ) -> zbus::fdo::Result<()> {
-        self.mounted_fs(&mount_path)?
-            .register_static_bytes(Path::new(&path), content)
-            .map_err(invalid_args)
+        self.with_file(&mount_path, &path, |fs, p| {
+            fs.register_static_bytes(p, content)
+        })
     }
 
     async fn register_sequence(
@@ -689,9 +792,9 @@ impl Control {
         path: String,
         values: Vec<Vec<u8>>,
     ) -> zbus::fdo::Result<()> {
-        self.mounted_fs(&mount_path)?
-            .register_sequence_bytes(Path::new(&path), values)
-            .map_err(invalid_args)
+        self.with_file(&mount_path, &path, |fs, p| {
+            fs.register_sequence_bytes(p, values)
+        })
     }
 
     async fn unregister(&self, mount_path: String, path: String) -> zbus::fdo::Result<bool> {
@@ -700,7 +803,12 @@ impl Control {
             .map_err(invalid_args)
     }
 
-    // TODO register callback, how to implement?
+    async fn register_callback(&self, mount_path: String, path: String) -> zbus::fdo::Result<()> {
+        let callback = self.make_agent_callback(mount_path.clone(), path.clone());
+        self.with_file(&mount_path, &path, |fs, p| {
+            fs.register_callback(p, callback)
+        })
+    }
 
     async fn ping(&self) -> String {
         "ok".to_owned()
@@ -717,11 +825,11 @@ async fn start_dbus_control_at(address: &str) -> zbus::Result<DbusControl> {
 }
 
 async fn serve_control(builder: zbus::connection::Builder<'_>) -> zbus::Result<DbusControl> {
-    let conn = builder
-        .name(BUS_NAME)?
-        .serve_at(OBJECT_PATH, Control::new())?
-        .build()
-        .await?;
+    let conn = builder.build().await?;
+    let handle = tokio::runtime::Handle::current();
+    let control = Control::new(conn.clone(), handle);
+    conn.object_server().at(OBJECT_PATH, control).await?;
+    conn.request_name(BUS_NAME).await?;
     Ok(DbusControl { _conn: conn })
 }
 
@@ -782,9 +890,9 @@ mod tests {
             O: Into<Vec<u8>>,
         {
             let name = name.as_ref();
-            self.handle
-                .register_callback(name, Box::new(move || generate().into().into_boxed_slice()))
-                .unwrap();
+            let cb: std::sync::Arc<super::Callback> =
+                std::sync::Arc::new(move || generate().into().into_boxed_slice());
+            self.handle.register_callback(name, cb).unwrap();
             self.path_for(name)
         }
 
