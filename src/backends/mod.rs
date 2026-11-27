@@ -224,16 +224,15 @@ pub fn registered_backends(cfg: &Config) -> Result<Vec<Box<dyn Backend>>, Backen
 /// supplied factory keeps the control protocol and concrete client
 /// backend-owned.
 pub async fn discover_via_control_socket<F>(
-    socket_dir: impl AsRef<Path>,
+    socket_dir: Path,
     socket_name: &str,
     make_client: F,
 ) -> io::Result<Vec<Arc<Instance>>>
 where
     F: Fn(Path) -> Box<dyn InstanceClient>,
 {
-    let socket_dir = socket_dir.as_ref();
     tracing::debug!("discovering in {}", socket_dir.display());
-    let mut entries = match tokio::fs::read_dir(socket_dir).await {
+    let mut entries = match tokio::fs::read_dir(&socket_dir).await {
         Ok(entries) => entries,
         Err(error) => {
             tracing::warn!(
@@ -262,8 +261,7 @@ where
         let Ok(id) = entry.file_name().into_string() else {
             continue;
         };
-        // FIXME double prefix bug
-        let sock_path = Path::new(&socket_dir.join(entry.path().join(socket_name)));
+        let sock_path = socket_dir.join(entry.path()).join(socket_name);
         let pid = match cached_control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -294,7 +292,7 @@ where
     PEER_CACHE
         .lock()
         .expect("lock poisoned")
-        .retain(|path, _| !path.starts_with(socket_dir) || seen.contains(path));
+        .retain(|path, _| !path.starts_with(&socket_dir) || seen.contains(path));
     Ok(instances)
 }
 
@@ -350,8 +348,7 @@ async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
 /// Return the start time of `pid`, or `None` if it no longer exists.
 fn process_start_time(pid: i32) -> Option<u64> {
     let path = Path::new(&format!("/proc/{pid}"));
-    let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
-    procfs::process::Process::new_with_root(path)
+    procfs::process::Process::new_with_root(path.to_path_buf())
         .and_then(|process| process.stat())
         .map(|stat| stat.starttime)
         .ok()
@@ -392,8 +389,8 @@ mod tests {
         async fn close(&self) {}
     }
 
-    async fn discover(socket_dir: &std::path::Path) -> Vec<Arc<Instance>> {
-        discover_via_control_socket(Path::new(socket_dir), "ctl", |_| {
+    async fn discover(socket_dir: &Path) -> Vec<Arc<Instance>> {
+        discover_via_control_socket(socket_dir.clone(), "ctl", |_| {
             Box::new(NullClient) as Box<dyn InstanceClient>
         })
         .await
@@ -417,16 +414,17 @@ mod tests {
     async fn test_discovery_reuses_identified_control_socket_peer() {
         let socket_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(socket_dir.path().join("vm-a")).unwrap();
-        let sock_path = socket_dir.path().join("vm-a").join("ctl");
+        let socket_dir = Path::new(socket_dir.path());
+        let sock_path = socket_dir.join("vm-a").join("ctl");
         let mut listener = bind(&sock_path);
 
-        let instances = discover(socket_dir.path()).await;
+        let instances = discover(&socket_dir).await;
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, "vm-a");
         assert_eq!(instances[0].pid, std::process::id() as i32);
         assert_eq!(pending(&listener), 1);
 
-        assert_eq!(discover(socket_dir.path()).await.len(), 1);
+        assert_eq!(discover(&socket_dir).await.len(), 1);
         assert_eq!(pending(&listener), 0);
 
         // Keep the old socket inode alive while rebinding so the filesystem
@@ -434,18 +432,18 @@ mod tests {
         std::fs::remove_file(&sock_path).unwrap();
         let old_listener = std::mem::replace(&mut listener, bind(&sock_path));
         drop(old_listener);
-        assert_eq!(discover(socket_dir.path()).await.len(), 1);
+        assert_eq!(discover(&socket_dir).await.len(), 1);
         assert_eq!(pending(&listener), 1);
 
         drop(listener);
         std::fs::remove_file(&sock_path).unwrap();
-        assert!(discover(socket_dir.path()).await.is_empty());
+        assert!(discover(&socket_dir).await.is_empty());
         assert!(
             !PEER_CACHE
                 .lock()
                 .unwrap()
                 .keys()
-                .any(|path| path.starts_with(socket_dir.path()))
+                .any(|path| path.starts_with(&socket_dir))
         );
     }
 }
