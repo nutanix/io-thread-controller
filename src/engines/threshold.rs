@@ -926,7 +926,10 @@ mod tests {
     use rstest::{fixture, rstest};
     use test_log::test;
 
-    use super::*;
+    use super::{
+        InstanceState, PostRevertUpHold, ThresholdConfig, ThresholdEngine, backoff_polls,
+        log_performance_revert,
+    };
     use crate::{
         backends::BackendClientError,
         config::PollPeriod,
@@ -934,6 +937,7 @@ mod tests {
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
+        path::Path,
     };
 
     #[derive(Clone)]
