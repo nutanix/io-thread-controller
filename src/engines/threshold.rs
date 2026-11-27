@@ -22,7 +22,7 @@ use crate::{
         ScalingEngine,
     },
     instance::Instance,
-    util::Path,
+    path::Path,
 };
 
 /// Registry and configuration name of the threshold engine.
@@ -937,7 +937,7 @@ mod tests {
         instance::{
             Instance, InstanceClient, InstancePerfSample, InstanceStatus, ThreadPoolSnapshot,
         },
-        util::Path,
+        path::Path,
     };
 
     #[derive(Clone)]

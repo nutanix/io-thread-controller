@@ -33,7 +33,7 @@ use crate::{
     backends::{Backend, BackendClientError, BackendRegistration},
     config::{self, ConfigError},
     instance::{Instance, InstanceClient},
-    util::Path,
+    path::Path,
 };
 
 pub mod client;

@@ -10,7 +10,7 @@ use std::{io, time::Duration};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::util::Path;
+use crate::path::Path;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {

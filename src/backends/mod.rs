@@ -22,7 +22,7 @@ use thiserror::Error;
 use crate::{
     config::{Config, ConfigError},
     instance::{Instance, InstanceClient, InstanceError},
-    util::Path,
+    path::Path,
 };
 
 /// One virtio-scsi IOThread-to-virtqueue mapping.
@@ -262,6 +262,7 @@ where
         let Ok(id) = entry.file_name().into_string() else {
             continue;
         };
+        // FIXME double prefix bug
         let sock_path = Path::new(&socket_dir.join(entry.path().join(socket_name)));
         let pid = match cached_control_socket_peer_pid(&sock_path).await {
             Ok(pid) => pid,

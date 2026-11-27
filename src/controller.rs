@@ -27,9 +27,9 @@ use crate::{
         AppliedOutcome, BlockedReason, EngineTickContext, PsiSample, ScaleAction, ScalingEngine,
     },
     instance::{CgroupError, Instance, InstanceStatus, SnapshotLatency},
+    path::Path,
     per_vm_log,
     state::{StateError, VmOwnership, VmStateStore},
-    util::Path,
 };
 /// Wire-facing container for the D-Bus `GetSnapshot` reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1086,7 +1086,6 @@ mod tests {
         engines::{EngineTickContext, ScalingEngine},
         instance::{InstanceClient, ThreadPoolSnapshot},
         per_vm_log::PerVmLog,
-        util::Path,
     };
     use tracing_subscriber::layer::SubscriberExt;
 

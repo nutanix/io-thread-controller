@@ -26,8 +26,9 @@ use tokio::sync::RwLock;
 
 use crate::{
     backends::{BackendClientError, IoThreadProperties, VqMapping},
+    path::Path,
     rolling::RollingMetrics,
-    util::{Path, ProcessExt},
+    util::ProcessExt,
 };
 
 #[derive(Debug, Error)]

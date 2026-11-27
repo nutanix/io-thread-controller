@@ -13,8 +13,8 @@ use io_thread_controller::{
     config::{Config, ConfigError, dump_default_config, load_or_default, validate_config},
     daemon::{DaemonError, VERSION, run},
     engines::{EngineError, load_registered_engine},
+    path::Path,
     per_vm_log::{self, PER_VM_LOG_DIR, PerVmLog},
-    util::Path,
 };
 use thiserror::Error;
 use tracing::{debug, info};
