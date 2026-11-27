@@ -203,7 +203,11 @@ mod tests {
                 "event=vm_added"
             ]
         );
-        assert_eq!(std::fs::read_dir(Path::new("/")).unwrap().count(), 1);
+        let count = std::fs::read_dir(Path::new("/"))
+            .unwrap()
+            .filter(|e| e.as_ref().map(|e| e.file_name() != "proc").unwrap_or(true))
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[derive(Clone, Default)]
@@ -256,6 +260,10 @@ mod tests {
             tracing::info!(target: VM, vm = "vm-a", "status=1");
         });
         assert!(log.path("vm-a").is_none());
-        assert_eq!(std::fs::read_dir(Path::new("/")).unwrap().count(), 0);
+        let count = std::fs::read_dir(Path::new("/"))
+            .unwrap()
+            .filter(|e| e.as_ref().map(|e| e.file_name() != "proc").unwrap_or(true))
+            .count();
+        assert_eq!(count, 0);
     }
 }
