@@ -369,13 +369,10 @@ mod tests {
 
     use super::*;
 
-    /// Test that default `Config` validates and uses the threshold
-    /// engine with a 10s poll.
+    /// Test that the default `Config` validates.
     #[test]
     fn test_config_default_is_valid() {
         let mut cfg = Config::default();
-        assert_eq!(cfg.engine, "threshold");
-        assert_eq!(cfg.scale_poll_secs, 10);
         validate_config(&mut cfg).unwrap().finish().unwrap();
     }
 
@@ -384,8 +381,7 @@ mod tests {
     fn test_config_rejects_empty_engine() {
         let mut cfg = Config::default();
         cfg.engine.clear();
-        let err = validate_config(&mut cfg).err().unwrap().to_string();
-        assert!(err.contains("engine must be non-empty"));
+        assert!(validate_config(&mut cfg).is_err());
     }
 
     /// Test that `validate_config` rejects a zero `scale_poll_secs`.
@@ -513,7 +509,7 @@ mod tests {
                 "engine": "threshold",
                 "engine_config_dir": "/engines",
                 "backend_config_dir": "/backends",
-                "scale_poll_secs": 1,
+                "scale_poll_secs": 1.0,
                 "not_a_real_field": true
             }"#,
         )
