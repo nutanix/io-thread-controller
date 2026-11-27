@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(cfg.scale_poll_secs, 7);
         assert_eq!(
             cfg.engine_config_dir.as_os_str(),
-            std::ffi::OsStr::new("/etc/io-thread-controller/engines")
+            Path::new("/etc/io-thread-controller/engines").as_os_str()
         );
     }
 
@@ -517,7 +517,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_or_default::<Config>(Path::new(path.to_str().unwrap())).unwrap_err();
+        let err = load_or_default::<Config>(&path).unwrap_err();
         assert!(matches!(err, ConfigError::SerdeJson(_)));
     }
 

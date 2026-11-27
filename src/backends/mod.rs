@@ -348,8 +348,7 @@ async fn cached_control_socket_peer_pid(sock_path: &Path) -> io::Result<i32> {
 /// Return the start time of `pid`, or `None` if it no longer exists.
 fn process_start_time(pid: i32) -> Option<u64> {
     let path = Path::new(&format!("/proc/{pid}"));
-    let path = std::path::PathBuf::from(std::path::Path::as_os_str(&path));
-    procfs::process::Process::new_with_root(path)
+    procfs::process::Process::new_with_root(path.to_path_buf())
         .and_then(|process| process.stat())
         .map(|stat| stat.starttime)
         .ok()
@@ -390,8 +389,8 @@ mod tests {
         async fn close(&self) {}
     }
 
-    async fn discover(socket_dir: &std::path::Path) -> Vec<Arc<Instance>> {
-        discover_via_control_socket(Path::new(socket_dir), "ctl", |_| {
+    async fn discover(socket_dir: &Path) -> Vec<Arc<Instance>> {
+        discover_via_control_socket(socket_dir.clone(), "ctl", |_| {
             Box::new(NullClient) as Box<dyn InstanceClient>
         })
         .await
