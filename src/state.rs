@@ -146,7 +146,11 @@ mod tests {
         store.save(&expected).unwrap();
 
         assert_eq!(store.load().unwrap(), expected);
-        assert_eq!(std::fs::read_dir(Path::new("/")).unwrap().count(), 1);
+        let count = std::fs::read_dir(Path::new("/"))
+            .unwrap()
+            .filter(|e| e.as_ref().map(|e| e.file_name() != "proc").unwrap_or(true))
+            .count();
+        assert_eq!(count, 1);
     }
 
     /// Test that a missing ownership file loads as empty/default state.

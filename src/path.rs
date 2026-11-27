@@ -30,7 +30,7 @@ impl Serialize for Path {
     where
         S: Serializer,
     {
-        let path = match self.path.strip_prefix(&*IO_THREAD_CONTROLLER_ROOT_PATH) {
+        let path = match self.path.strip_prefix(&*ROOT_PATH) {
             Ok(rel) if self.path.is_absolute() => std::path::Path::new("/").join(rel),
             _ => self.path.clone(),
         };

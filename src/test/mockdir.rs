@@ -49,12 +49,24 @@ pub(crate) struct MockDir {
 impl MockDir {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path();
-
+        let path = dir.path().to_path_buf();
+        let root_override = override_root(&path);
         Self {
-            path: path.to_path_buf(),
-            _root_override: override_root(path),
+            path,
+            _root_override: root_override,
             _dir: dir,
+        }
+    }
+
+    /// Populate mock `/proc/<pid>/stat` for the current process so reads don't
+    /// fail with ENOENT and have the file contain data of the right shape.
+    pub(crate) fn populate_mock_proc(&self) {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", std::process::id())) {
+            let mock_stat = crate::path::Path::new(&format!("/proc/{}/stat", std::process::id()));
+            if let Some(parent) = mock_stat.parent() {
+                let _ = std::fs::create_dir_all(parent);
+                let _ = std::fs::write(&mock_stat, stat);
+            }
         }
     }
 }
@@ -62,7 +74,9 @@ impl MockDir {
 /// Create a new `MockDir` as an `rstest` fixture
 #[fixture]
 pub(crate) fn mockdir() -> MockDir {
-    MockDir::new()
+    let md = MockDir::new();
+    md.populate_mock_proc();
+    md
 }
 
 #[cfg(test)]
