@@ -18,6 +18,7 @@ class DBusServer:
         """
         self._socket = root / "dbus.sock"
         self._config = root / "dbus.xml"
+        self._config.parent.mkdir(parents=True, exist_ok=True)
         self._config.write_text(
             """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
