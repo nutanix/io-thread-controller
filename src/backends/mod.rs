@@ -148,6 +148,8 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+#[cfg(feature = "json-backend")]
+pub mod json;
 #[cfg(feature = "qemu-backend")]
 pub mod qemu;
 

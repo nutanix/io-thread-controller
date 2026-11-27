@@ -282,6 +282,14 @@ through `virDomainQemuMonitorCommand`. Its configuration is loaded from
 `backends.d/qemu.json`. Named IOThreads and virtqueue mappings can be inspected
 or changed through the backend CLI and D-Bus operations.
 
+## JSON backend
+
+The JSON backend is used for component testing. It tracks mocked VM state
+through JSON files which the Python-based component testing harness can read or
+modify as necessary. It also tracks actuation history, allowing tests to confirm
+scaling patterns. In component tests, the `JsonBackend` fixture allows for easy
+configuration and manipulation.
+
 ## Cgroup throttling
 
 With `refresh_cgroup_on_each_read` enabled, each refresh reads the VM process's
