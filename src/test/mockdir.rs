@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Copyright (c) 2026 Nutanix, Inc.
+//
+// Author: Leonardo Forchini <leonardo.forchini@nutanix.com>
+//
+//! `tempfile::TempDir` wrapper which controls the prefix of
+//! `crate::path::Path`s. This is intended to allow unit tests to be run in
+//! parallel with independent path prefixes. Each test is able to get its own
+//! `TempDir` which `Path`s will implicitly treat as their root and can use as
+//! their working directories.
+
+use std::{cell::RefCell, path::PathBuf};
+
+use rstest::fixture;
+
+thread_local! {
+    pub static ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Scoped root override for tests that access absolute paths through
+/// `crate::path::Path`.
+pub(crate) struct RootOverride {
+    previous: Option<std::path::PathBuf>,
+}
+
+impl Drop for RootOverride {
+    fn drop(&mut self) {
+        ROOT_OVERRIDE.with(|root| {
+            root.replace(self.previous.take());
+        });
+    }
+}
+
+/// Override the root used by new `crate::path::Path`s on the current test
+/// thread. Any new absolute `Path`s will start with `"{root}/"`.
+fn override_root(root: impl Into<PathBuf>) -> RootOverride {
+    let previous = ROOT_OVERRIDE.with(|slot| slot.replace(Some(root.into())));
+    RootOverride { previous }
+}
+
+/// Temporary mock root installed as the current test thread's
+/// `crate::util::Path` prefix.
+pub(crate) struct MockDir {
+    path: std::path::PathBuf,
+    _root_override: RootOverride,
+    _dir: tempfile::TempDir,
+}
+
+impl MockDir {
+    pub(crate) fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let root_override = override_root(&path);
+        Self {
+            path,
+            _root_override: root_override,
+            _dir: dir,
+        }
+    }
+
+    /// Populate mock `/proc/<pid>/stat` for the current process so reads don't
+    /// fail with ENOENT and have the file contain data of the right shape.
+    pub(crate) fn populate_mock_proc(&self) {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", std::process::id())) {
+            let mock_stat = crate::path::Path::new(&format!("/proc/{}/stat", std::process::id()));
+            if let Some(parent) = mock_stat.parent() {
+                let _ = std::fs::create_dir_all(parent);
+                let _ = std::fs::write(&mock_stat, stat);
+            }
+        }
+    }
+}
+
+/// Create a new `MockDir` as an `rstest` fixture
+#[fixture]
+pub(crate) fn mockdir() -> MockDir {
+    let md = MockDir::new();
+    md.populate_mock_proc();
+    md
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+    use crate::path::{Path, effective_root};
+
+    /// Ensure that a new `MockDir` actually changes the effective root.
+    #[test]
+    fn test_mockdir_changes_effective_root() {
+        let old_root = effective_root();
+
+        let _mockdir = MockDir::new();
+        assert_ne!(old_root, effective_root());
+    }
+
+    /// Ensure new `util::Paths`s use a given `MockDir`'s prefix.
+    #[rstest]
+    fn test_mockdir_modifies_util_paths(mockdir: MockDir) {
+        let util_path = Path::from("/etc/passwd");
+        assert_ne!(mockdir.path, std::path::Path::new("/"));
+        assert_eq!(util_path.to_path_buf(), mockdir.path.join("etc/passwd"));
+    }
+
+    /// Ensure paths created before a new `MockDir` are not prefixed with its
+    /// dir.
+    // TODO is this the behaviour we want? MockDirs will mostly be used as
+    // fixtures so I don't think it should come up too often.
+    #[test]
+    fn test_mockdir_preserves_existing_paths() {
+        let util_path = Path::from("/etc/passwd");
+
+        let mockdir = MockDir::new();
+        assert_ne!(util_path.to_path_buf(), mockdir.path.join("etc/passwd"));
+    }
+
+    /// Ensure once a `MockDir` goes out of scope the effective root is
+    /// restored.
+    #[test]
+    fn test_mockdir_reverts_on_drop() {
+        let _outer = MockDir::new();
+        let outer_path = effective_root();
+
+        let inner_path = {
+            let _inner = MockDir::new();
+            effective_root()
+        };
+
+        let post_drop_path = effective_root();
+
+        assert_ne!(outer_path, inner_path);
+        assert_eq!(outer_path, post_drop_path);
+    }
+}
