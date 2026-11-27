@@ -25,11 +25,16 @@ pub struct Path {
 }
 
 impl Serialize for Path {
+    /// Strips the effective root so deserializing doesn't prefix twice.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.path.to_string_lossy())
+        let path = match self.path.strip_prefix(&*IO_THREAD_CONTROLLER_ROOT_PATH) {
+            Ok(rel) if self.path.is_absolute() => std::path::Path::new("/").join(rel),
+            _ => self.path.clone(),
+        };
+        serializer.serialize_str(&path.to_string_lossy())
     }
 }
 

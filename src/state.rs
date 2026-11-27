@@ -131,7 +131,7 @@ impl VmStateStore {
 mod tests {
     use super::*;
 
-    /// Test that managed/unmanaged sets save and reload from a single
+    /// Test that managed/unmanaged sets both save and reload from a single
     /// JSON file.
     #[test]
     fn ownership_round_trips_in_one_file() {
